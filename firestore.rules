@@ -1,0 +1,100 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Função auxiliar para verificar se o usuário está autenticado
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Função para verificar se o usuário é o proprietário do documento
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    // Função para validar estrutura de dados
+    function validTransaction(data) {
+      return data.size() >= 6 
+        && 'accountId' in data && data.accountId is string
+        && 'userId' in data && data.userId is string
+        && 'type' in data && (data.type == 'income' || data.type == 'expense')
+        && 'amount' in data && data.amount is number && data.amount > 0
+        && 'category' in data && data.category is string
+        && 'description' in data && data.description is string
+        && 'date' in data 
+        && (!('tags' in data) || data.tags is list); // Tornando tags opcional, mas se existir, deve ser uma lista
+    }
+    
+    // Usuários
+    match /users/{userId} {
+      // Usuários só podem ler e escrever seus próprios dados
+      allow read, update, delete: if isOwner(userId);
+      // Qualquer usuário autenticado pode criar seu perfil
+      allow create: if isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    // Contas financeiras
+    match /accounts/{accountId} {
+      // Verificar se a conta pertence ao usuário autenticado ou está sendo criada pelo usuário autenticado
+      allow read: if isAuthenticated() && (
+        resource == null || resource.data.userId == request.auth.uid
+      );
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+    
+    // Transações
+    match /transactions/{transactionId} {
+      // Permitir leitura para transações de contas que o usuário possui
+      allow read: if isAuthenticated() && (
+        resource == null || 
+        get(/databases/$(database)/documents/accounts/$(resource.data.accountId)).data.userId == request.auth.uid
+      );
+      
+      // Permitir criação se a conta associada pertence ao usuário e os dados são válidos
+      allow create: if isAuthenticated() && 
+        get(/databases/$(database)/documents/accounts/$(request.resource.data.accountId)).data.userId == request.auth.uid &&
+        validTransaction(request.resource.data);
+      
+      // Permitir atualização e exclusão se a conta associada pertence ao usuário
+      allow update, delete: if isAuthenticated() && 
+        get(/databases/$(database)/documents/accounts/$(resource.data.accountId)).data.userId == request.auth.uid;
+    }
+    
+    // Categorias
+    match /categories/{categoryId} {
+      // Qualquer usuário autenticado pode ler todas as categorias
+      allow read: if isAuthenticated();
+      
+      // Permitir criação se o usuário está definindo seu ID como proprietário
+      allow create: if isAuthenticated() && 
+        (!('userId' in request.resource.data) || request.resource.data.userId == request.auth.uid);
+      
+      // Permitir atualização/exclusão apenas para categorias do usuário (não padrão)
+      allow update, delete: if isAuthenticated() && 
+        'userId' in resource.data && 
+        resource.data.userId == request.auth.uid && 
+        !resource.data.id.startsWith('default-');
+    }
+    
+    // Metas financeiras
+    match /goals/{goalId} {
+      // Metas só podem ser acessadas pelo proprietário
+      allow read: if isAuthenticated() && (
+        resource == null || resource.data.userId == request.auth.uid
+      );
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+    
+    // Configurações do usuário
+    match /settings/{userId} {
+      // Configurações só podem ser acessadas pelo proprietário
+      allow read, write: if isOwner(userId);
+    }
+    
+    // Proteção padrão: negar acesso a tudo que não foi explicitamente permitido
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+} 
