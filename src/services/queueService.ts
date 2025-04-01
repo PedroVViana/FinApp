@@ -96,6 +96,48 @@ export const processOperation = async (operation: PendingOperation, db: IDBPData
     operation.documentId ? `ID: ${operation.documentId}` : '');
   
   try {
+    // Verificar e garantir que os dados estão em formato válido
+    if (operation.collection === 'transactions') {
+      // Certificar que estes campos importantes existem
+      if (!operation.data.accountId || !operation.data.userId || operation.data.amount === undefined) {
+        console.error('Dados de transação inválidos:', operation.data);
+        throw new Error('Dados incompletos para transação');
+      }
+      
+      // Garantir que o campo tags seja sempre um array
+      if (!operation.data.tags || !Array.isArray(operation.data.tags)) {
+        operation.data.tags = [];
+        console.log('Tags em formato inválido, definindo como array vazio');
+      }
+      
+      // Garantir que a data esteja em formato correto
+      if (operation.data.date) {
+        try {
+          // Se for string no formato YYYY-MM-DD
+          if (typeof operation.data.date === 'string' && operation.data.date.match(/^\d{4}-\d{2}-\d{2}$/)) {
+            console.log('Data em formato válido (YYYY-MM-DD):', operation.data.date);
+          } else {
+            // Tentar interpretar a data e formatá-la
+            const parsedDate = new Date(operation.data.date);
+            if (isNaN(parsedDate.getTime())) {
+              console.warn('Data inválida, definindo para hoje:', operation.data.date);
+              operation.data.date = new Date().toISOString().split('T')[0];
+            } else {
+              operation.data.date = parsedDate.toISOString().split('T')[0];
+            }
+          }
+        } catch (err) {
+          console.warn('Erro ao processar data, definindo para hoje:', err);
+          operation.data.date = new Date().toISOString().split('T')[0];
+        }
+      }
+      
+      // Garantir que amount é um número
+      operation.data.amount = Number(operation.data.amount);
+      
+      console.log('Dados de transação validados e corrigidos:', operation.data);
+    }
+    
     switch (operation.type) {
       case 'create':
         switch (operation.collection) {
@@ -175,6 +217,20 @@ export const processOperation = async (operation: PendingOperation, db: IDBPData
     const errorMessage = error.message || 'Erro desconhecido';
     console.error(`Erro ao processar operação pendente (${operation.collection}/${operation.documentId}): ${errorMessage}`, error);
     
+    // Verificar se é um erro de permissão do Firebase
+    const isPermissionError = errorMessage.includes('permission') || 
+                             errorMessage.includes('Permission') ||
+                             errorMessage.includes('403');
+    
+    // Se o erro for de permissão ou se já tentou muitas vezes, remover a operação da fila
+    if (isPermissionError || (operation.retryCount && operation.retryCount >= 3)) {
+      console.warn(`Operação ${operation.id} será removida da fila após ${operation.retryCount} tentativas ou erro de permissão`);
+      if (operation.id) {
+        await db.delete(STORE_NAME, operation.id);
+      }
+      return false;
+    }
+    
     // Incrementar contagem de tentativas
     if (operation.id) {
       const updatedOperation = { 
@@ -202,7 +258,7 @@ export const processPendingQueue = async (): Promise<number> => {
   }
   
   const db = await initDatabase();
-  let sucessCount = 0;
+  let successCount = 0;
   
   try {
     const pendingOps = await db.getAll(STORE_NAME);
@@ -224,67 +280,134 @@ export const processPendingQueue = async (): Promise<number> => {
       const retryCount = op.retryCount || 0;
       
       if (retryCount >= 5) {
-        console.warn(`Operação ${i + 1} ignorada após 5 tentativas.`);
+        console.log(`Operação ${i + 1} ignorada após ${retryCount} tentativas.`);
         
-        // MODIFICAÇÃO: Verificar se é uma operação 'create' para transactions e consertar o erro de tags undefined
+        // Tentativa especial para consertar problemas específicos em transações
         if (op.type === 'create' && op.collection === 'transactions') {
           console.log('Tentando consertar operação de transação com possível problema em tags...');
           
-          // Consertar dados antes de tentar novamente
-          if (op.data.tags === undefined) {
-            op.data.tags = [];
-            console.log('Campo tags undefined corrigido para array vazio');
-          }
-          
-          // Remover campos undefined que possam causar problemas
-          const dadosLimpos: Record<string, any> = {};
-          Object.entries(op.data).forEach(([key, value]) => {
-            if (value !== undefined) {
-              dadosLimpos[key] = value;
-            } else {
-              console.log(`Removendo campo ${key} com valor undefined da operação`);
+          if (op.data && typeof op.data === 'object') {
+            // Garantir que tags seja um array válido
+            if (!op.data.tags || !Array.isArray(op.data.tags)) {
+              op.data.tags = [];
+              console.log('Tags corrigido para um array vazio');
             }
-          });
-          
-          op.data = dadosLimpos;
-          
-          // Resetar contagem de tentativas
-          op.retryCount = 0;
-          
-          // Atualizar a operação no banco
-          await db.put(STORE_NAME, op);
-          console.log('Operação de transação corrigida e reiniciada para nova tentativa');
-          
-          // Tentar processar novamente nesta mesma execução
-          try {
-            await processOperation(op, db);
-            sucessCount++;
-            console.log(`Operação ${i + 1} processada com sucesso após correção!`);
-          } catch (processingError) {
-            console.error(`Falha ao processar operação corrigida: ${processingError}`);
-          }
-        } else {
-          // Para outras operações, tentar limpar dados
-          try {
-            await db.delete(STORE_NAME, op.id as number);
-            console.log(`Operação ${i + 1} removida da fila após 5 tentativas falhas.`);
-          } catch (deleteError) {
-            console.error(`Erro ao remover operação da fila: ${deleteError}`);
+            
+            // Verificar problemas com a data
+            if (op.data.date && typeof op.data.date === 'string') {
+              try {
+                // Tentar converter para garantir que é uma data válida
+                const dateObj = new Date(op.data.date);
+                // Se chegou aqui, a data é válida. Formatá-la como YYYY-MM-DD
+                op.data.date = dateObj.toISOString().split('T')[0];
+                console.log(`Data corrigida para: ${op.data.date}`);
+              } catch (e) {
+                // Se falhar, usar a data atual
+                op.data.date = new Date().toISOString().split('T')[0];
+                console.log(`Data inválida substituída por: ${op.data.date}`);
+              }
+            }
+            
+            // Garantir que userId esteja presente e correto
+            if (!op.data.userId || op.data.userId !== op.userId) {
+              op.data.userId = op.userId;
+              console.log(`UserId corrigido para: ${op.userId}`);
+            }
+            
+            // Resetar a contagem de tentativas para tentar novamente
+            op.retryCount = 0;
+            
+            // Atualizar a operação no banco
+            await db.put(STORE_NAME, op);
+            
+            console.log('Operação de transação corrigida e reiniciada para nova tentativa');
+            
+            // Processar a operação corrigida imediatamente
+            try {
+              await processOperation(op, db);
+              // Se chegou aqui, deu certo, então remover da fila
+              await db.delete(STORE_NAME, op.id as number);
+              
+              successCount++;
+              console.log(`Operação ${i + 1} processada com sucesso após correção!`);
+            } catch (processingError: any) {
+              console.error(`Falha ao processar operação corrigida:`, processingError);
+              
+              // Verificar se é um erro de permissão do Firestore
+              if (String(processingError).includes('Missing or insufficient permissions')) {
+                console.log('Detectado erro de permissão ao tentar processar a operação');
+                
+                // Esperar um tempo antes de tentar novamente 
+                // (pode ser um problema temporário de autenticação)
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                
+                try {
+                  // Tentar processar novamente após aguardar
+                  await processOperation(op, db);
+                  
+                  // Se chegou aqui, deu certo, então remover da fila
+                  await db.delete(STORE_NAME, op.id as number);
+                  
+                  successCount++;
+                  console.log(`Operação ${i + 1} processada com sucesso após aguardar!`);
+                } catch (finalError) {
+                  console.error('Falha definitiva após espera:', finalError);
+                  
+                  // Incrementar a contagem de tentativas
+                  op.retryCount = (op.retryCount || 0) + 1;
+                  await db.put(STORE_NAME, op);
+                  
+                  console.log(`Incrementada contagem de tentativas para ${op.retryCount}`);
+                }
+              }
+            }
+            
+            continue; // Ir para a próxima operação
           }
         }
+        
+        // Se não tiver conseguido consertar, apenas ignorar
+        await db.delete(STORE_NAME, op.id as number);
         continue;
       }
       
       try {
         await processOperation(op, db);
-        sucessCount++;
-      } catch (error) {
+        
+        // Remover da fila
+        await db.delete(STORE_NAME, op.id as number);
+        
+        successCount++;
+      } catch (error: any) {
         console.error(`Erro ao processar operação pendente (${op.collection}/${op.documentId}):`, error);
         
-        // Incrementar contagem de tentativas
-        op.retryCount = retryCount + 1;
-        op.lastError = error instanceof Error ? error.message : String(error);
+        // Verificar se é um erro de permissão do Firestore
+        if (String(error).includes('Missing or insufficient permissions')) {
+          console.log('Detectado erro de permissão. Verificando autenticação...');
+          
+          // Esperar um tempo antes de tentar novamente 
+          // (pode ser um problema temporário de autenticação)
+          await new Promise(resolve => setTimeout(resolve, 3000));
+          
+          try {
+            // Tentar processar novamente após aguardar
+            await processOperation(op, db);
+            
+            // Se chegou aqui, deu certo, então remover da fila
+            await db.delete(STORE_NAME, op.id as number);
+            
+            successCount++;
+            console.log(`Operação ${i + 1} processada com sucesso após aguardar!`);
+            continue;
+          } catch (retryError) {
+            console.error('Falha definitiva após espera:', retryError);
+            // Continuar com o incremento de tentativas abaixo
+          }
+        }
         
+        // Incrementar a contagem de tentativas
+        op.retryCount = (op.retryCount || 0) + 1;
+        op.lastError = error instanceof Error ? error.message : String(error);
         console.log(`Incrementada contagem de tentativas para ${op.retryCount}`);
         
         // Atualizar a operação no banco
@@ -292,13 +415,13 @@ export const processPendingQueue = async (): Promise<number> => {
       }
     }
     
-    console.log(`Processamento concluído. ${sucessCount} de ${pendingOps.length} operações processadas com sucesso.`);
-    return sucessCount;
+    console.log(`Processamento concluído. ${successCount} de ${pendingOps.length} operações processadas com sucesso.`);
+    return successCount;
   } catch (error) {
     console.error('Erro ao processar fila de operações:', error);
-    return sucessCount;
+    return successCount;
   } finally {
-    db.close();
+    // Não precisamos fechar o db com a lib idb, ela gerencia isso automaticamente
   }
 };
 
@@ -371,51 +494,58 @@ export const addAccount = async (
   }
 };
 
-// Expor função para adicionar transação ao Firestore com suporte para modo offline
-export const addTransaction = async (
-  transaction: Omit<Transaction, 'id'>, 
-  userId: string
-): Promise<string> => {
-  console.log(`QueueService: Adicionando transação para usuário ${userId}`, transaction);
+/**
+ * Adiciona uma transação à fila de operações
+ * @param transaction Dados da transação
+ * @param userId ID do usuário
+ * @returns ID da transação
+ */
+export const addTransaction = async (transaction: any, userId: string): Promise<string> => {
+  const queueId = await addToQueue({
+    type: 'create',
+    collection: 'transactions',
+    data: {
+      ...transaction,
+      userId,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    },
+    userId
+  });
+  
+  return `temp-${queueId}`;
+};
 
-  // Verificar se userId está explicitamente definido no objeto transaction
-  if (!transaction.userId) {
-    console.log('QueueService: Garantindo userId no objeto de transação');
-    transaction = { ...transaction, userId };
-  }
-  
-  // Se estiver offline, adicionar à fila
-  if (!navigator.onLine) {
-    const queueId = await addToQueue({
-      type: 'create',
-      collection: 'transactions',
-      data: transaction,
-      userId
-    });
-    
-    console.log(`QueueService: Offline - Transação adicionada à fila, ID temporário: temp-${queueId}`);
-    return `temp-${queueId}`;
-  }
-  
-  // Se online, tentar enviar diretamente ao Firestore
-  try {
-    console.log('QueueService: Online - Tentando adicionar transação diretamente ao Firestore');
-    // Não descartar nenhum campo da transação - enviar como está
-    const id = await firestoreService.createTransaction(transaction as any, userId);
-    console.log(`QueueService: Transação criada no Firestore com ID: ${id}`);
-    return id;
-  } catch (error) {
-    console.error('QueueService: Erro ao criar transação, adicionando à fila:', error);
-    
-    // Em caso de falha, adicionar à fila
-    const queueId = await addToQueue({
-      type: 'create',
-      collection: 'transactions',
-      data: transaction,
-      userId
-    });
-    
-    console.log(`QueueService: Erro - Transação adicionada à fila, ID temporário: temp-${queueId}`);
-    return `temp-${queueId}`;
-  }
+/**
+ * Atualiza uma transação na fila de operações
+ * @param id ID da transação
+ * @param transaction Dados atualizados da transação
+ * @param userId ID do usuário
+ */
+export const updateTransaction = async (id: string, transaction: any, userId: string): Promise<void> => {
+  await addToQueue({
+    type: 'update',
+    collection: 'transactions',
+    documentId: id,
+    data: {
+      ...transaction,
+      updatedAt: new Date().toISOString()
+    },
+    userId
+  });
+};
+
+/**
+ * Remove uma transação da fila de operações
+ * @param id ID da transação
+ * @param userId ID do usuário
+ */
+export const deleteTransaction = async (id: string, userId: string): Promise<void> => {
+  await addToQueue({
+    type: 'delete',
+    collection: 'transactions',
+    documentId: id,
+    data: {},
+    userId
+  });
 }; 

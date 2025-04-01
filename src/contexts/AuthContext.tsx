@@ -3,6 +3,7 @@ import { User as FirebaseUser, signInWithPopup, signOut, onAuthStateChanged } fr
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { auth, googleProvider, db } from '../config/firebase';
 import { User } from '../types';
+import * as firestoreService from '../services/firestore';
 
 interface AuthContextData {
   currentUser: FirebaseUser | null;
@@ -32,6 +33,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (userDoc.exists()) {
             console.log('User data found:', userDoc.data()); // Debug log
             setUserData(userDoc.data() as User);
+            // Verificar se o usuário tem categorias padrão
+            await firestoreService.ensureDefaultCategories(user.uid);
           } else {
             console.log('No user data found, creating new user'); // Debug log
             const newUser: User = {
@@ -44,6 +47,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             };
             await setDoc(userDocRef, newUser);
             setUserData(newUser);
+            // Criar categorias padrão para o novo usuário
+            await firestoreService.createDefaultCategories(user.uid);
           }
         } catch (error) {
           console.error('Error fetching user data:', error);
@@ -80,8 +85,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         
         await setDoc(userDocRef, newUser);
         setUserData(newUser);
+        
+        // Criar categorias padrão para o novo usuário
+        await firestoreService.createDefaultCategories(user.uid);
+        console.log('Categorias padrão criadas para o novo usuário');
       } else {
         setUserData(userDoc.data() as User);
+        // Verificar se o usuário tem categorias padrão
+        await firestoreService.ensureDefaultCategories(user.uid);
       }
     } catch (error) {
       console.error('Erro ao fazer login com Google:', error);

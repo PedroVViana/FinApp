@@ -1,0 +1,640 @@
+# Plano de Migração do FinApp: Firebase para AWS
+
+## Índice
+1. Visão Geral
+2. Pré-requisitos
+3. Configuração da Conta AWS
+4. Mapeamento de Serviços Firebase para AWS
+5. Implementação por Etapas
+   - Etapa 1: Preparação do Ambiente
+   - Etapa 2: Configuração da Autenticação (Amazon Cognito)
+   - Etapa 3: Migração do Banco de Dados (DynamoDB)
+   - Etapa 4: Configuração do Armazenamento (S3)
+   - Etapa 5: Adaptação do Código Frontend (React)
+   - Etapa 6: Migração de Cloud Functions para Lambda
+   - Etapa 7: Configuração da Hospedagem Frontend
+   - Etapa 8: Testes e Otimização
+6. Guia de Implantação
+7. Recursos Adicionais
+
+## 1. Visão Geral
+
+Este documento fornece um guia passo a passo para migrar o aplicativo FinApp do Firebase para a infraestrutura AWS, mantendo o React no frontend. A migração envolve substituir os serviços do Firebase (Authentication, Firestore, Storage, Hosting e Functions) por seus equivalentes na AWS.
+
+## 2. Pré-requisitos
+
+- Node.js (v14 ou superior) - https://nodejs.org/
+- npm (v6 ou superior) ou yarn
+- Git
+- AWS CLI - https://aws.amazon.com/cli/
+- Conta AWS ativa
+- Cursor (sua IDE atual)
+- Conhecimento básico de React e serviços AWS
+
+## 3. Configuração da Conta AWS
+
+1. **Criar uma conta AWS**
+   - Acesse https://aws.amazon.com/
+   - Clique em "Criar uma conta AWS"
+   - Siga as instruções para criar sua conta
+
+2. **Configurar usuário IAM**
+   - Acesse o Console AWS > IAM > Usuários > "Adicionar usuário"
+   - Nome do usuário: "finapp-admin"
+   - Tipo de acesso: "Acesso programático"
+   - Anexar políticas: "AdministratorAccess" (para desenvolvimento)
+   - Guarde suas credenciais (Access Key ID e Secret Access Key)
+
+3. **Configurar AWS CLI**
+   ```bash
+   aws configure
+   ```
+   - Insira sua Access Key ID, Secret Access Key, região (ex: us-east-1) e formato de saída (json)
+
+## 4. Mapeamento de Serviços Firebase para AWS
+
+| Serviço Firebase | Serviço AWS | Função |
+|------------------|-------------|--------|
+| Authentication | Amazon Cognito | Gerenciamento de usuários e autenticação |
+| Firestore | Amazon DynamoDB | Banco de dados NoSQL |
+| Storage | Amazon S3 | Armazenamento de arquivos |
+| Hosting | Amazon S3 + CloudFront | Hospedagem frontend |
+| Cloud Functions | AWS Lambda + API Gateway | Funções serverless |
+
+## 5. Implementação por Etapas
+
+### Etapa 1: Preparação do Ambiente
+
+1. **Instalar AWS Amplify CLI**
+   ```bash
+   npm install -g @aws-amplify/cli
+   ```
+
+2. **Inicializar o projeto Amplify**
+   ```bash
+   cd seu-projeto-finapp
+   amplify init
+   ```
+   - Forneça um nome para o projeto: "finapp"
+   - Escolha seu editor preferido: "Visual Studio Code"
+   - Tipo de aplicativo: "javascript"
+   - Framework: "react"
+   - Caminho do código-fonte: "src"
+   - Caminho da distribuição: "build"
+   - Comando de construção: "npm run build"
+   - Comando de inicialização: "npm start"
+   - Use credenciais AWS: "Y"
+
+3. **Verificar inicialização**
+   ```bash
+   amplify status
+   ```
+
+### Etapa 2: Configuração da Autenticação (Amazon Cognito)
+
+1. **Adicionar autenticação**
+   ```bash
+   amplify add auth
+   ```
+   - Cenário padrão: "Default configuration"
+   - Método de login: "Email"
+   - Configurações avançadas: "Yes"
+   - Ativar login com redes sociais: "Yes", escolha "Google"
+   - Forneça suas credenciais OAuth do Google (Client ID e Secret)
+
+2. **Implementar código de autenticação**
+   - Edite `src/contexts/AuthContext.tsx`:
+
+   ```typescript
+   import { Auth } from 'aws-amplify';
+   import { CognitoHostedUIIdentityProvider } from '@aws-amplify/auth';
+   
+   // Substituir métodos de autenticação Firebase
+   
+   // Login com email/senha
+   const signIn = async (email: string, password: string) => {
+     try {
+       const user = await Auth.signIn(email, password);
+       return user;
+     } catch (error) {
+       console.error('Erro no login:', error);
+       throw error;
+     }
+   };
+   
+   // Cadastro com email/senha
+   const signUp = async (email: string, password: string, displayName: string) => {
+     try {
+       const { user } = await Auth.signUp({
+         username: email,
+         password,
+         attributes: {
+           name: displayName,
+           email,
+         }
+       });
+       return user;
+     } catch (error) {
+       console.error('Erro no cadastro:', error);
+       throw error;
+     }
+   };
+   
+   // Login com Google
+   const signInWithGoogle = async () => {
+     try {
+       await Auth.federatedSignIn({
+         provider: CognitoHostedUIIdentityProvider.Google
+       });
+     } catch (error) {
+       console.error('Erro no login com Google:', error);
+       throw error;
+     }
+   };
+   
+   // Logout
+   const signOut = async () => {
+     try {
+       await Auth.signOut();
+     } catch (error) {
+       console.error('Erro no logout:', error);
+       throw error;
+     }
+   };
+   
+   // Listener de estado de autenticação
+   useEffect(() => {
+     const unsubscribe = Hub.listen('auth', ({ payload: { event, data } }) => {
+       switch (event) {
+         case 'signIn':
+           setCurrentUser(data);
+           break;
+         case 'signOut':
+           setCurrentUser(null);
+           break;
+       }
+     });
+     
+     Auth.currentAuthenticatedUser()
+       .then(user => setCurrentUser(user))
+       .catch(() => setCurrentUser(null));
+       
+     return unsubscribe;
+   }, []);
+   ```
+
+3. **Aplicar mudanças**
+   ```bash
+   amplify push
+   ```
+
+### Etapa 3: Migração do Banco de Dados (DynamoDB)
+
+1. **Adicionar API do DynamoDB**
+   ```bash
+   amplify add api
+   ```
+   - Escolha: "REST"
+   - Nome da API: "finappapi"
+   - Caminho: "/items"
+   - Escolha o modelo de Lambda: "CRUD function for DynamoDB"
+   
+2. **Definir modelo de dados**
+   - Edite os modelos para corresponder às estruturas Firestore
+
+   ```javascript
+   // Schema para usuários
+   const userSchema = {
+     tableName: "Users",
+     partitionKey: { name: "id", type: "string" },
+     attributes: [
+       { name: "email", type: "string" },
+       { name: "displayName", type: "string" },
+       { name: "planType", type: "string" },
+       { name: "createdAt", type: "string" }
+     ]
+   };
+
+   // Schema para contas
+   const accountSchema = {
+     tableName: "Accounts",
+     partitionKey: { name: "id", type: "string" },
+     sortKey: { name: "userId", type: "string" },
+     attributes: [
+       { name: "name", type: "string" },
+       { name: "type", type: "string" },
+       { name: "balance", type: "number" },
+       { name: "createdAt", type: "string" }
+     ],
+     globalSecondaryIndexes: [
+       {
+         name: "byUserId",
+         partitionKey: { name: "userId", type: "string" },
+         sortKey: { name: "createdAt", type: "string" }
+       }
+     ]
+   };
+
+   // Schema para transações
+   const transactionSchema = {
+     tableName: "Transactions",
+     partitionKey: { name: "id", type: "string" },
+     sortKey: { name: "accountId", type: "string" },
+     attributes: [
+       { name: "userId", type: "string" },
+       { name: "type", type: "string" },
+       { name: "amount", type: "number" },
+       { name: "category", type: "string" },
+       { name: "description", type: "string" },
+       { name: "date", type: "string" },
+       { name: "pending", type: "boolean" },
+       { name: "tags", type: "list" },
+       { name: "createdAt", type: "string" },
+       { name: "updatedAt", type: "string" }
+     ],
+     globalSecondaryIndexes: [
+       {
+         name: "byAccountId",
+         partitionKey: { name: "accountId", type: "string" },
+         sortKey: { name: "date", type: "string" }
+       },
+       {
+         name: "byUserId",
+         partitionKey: { name: "userId", type: "string" },
+         sortKey: { name: "date", type: "string" }
+       }
+     ]
+   };
+   ```
+
+3. **Implementar serviço de acesso a dados** 
+   - Crie `src/services/dynamoService.ts`:
+
+   ```typescript
+   import { API } from 'aws-amplify';
+   import { v4 as uuidv4 } from 'uuid';
+   
+   // Usuários
+   export const createUser = async (userData) => {
+     const apiName = 'finappapi';
+     const path = '/users';
+     const myInit = {
+       body: {
+         ...userData,
+         id: userData.id || uuidv4(),
+         createdAt: new Date().toISOString()
+       }
+     };
+     return API.post(apiName, path, myInit);
+   };
+   
+   export const getUser = async (userId) => {
+     const apiName = 'finappapi';
+     const path = `/users/${userId}`;
+     return API.get(apiName, path, {});
+   };
+   
+   export const updateUser = async (userId, userData) => {
+     const apiName = 'finappapi';
+     const path = `/users/${userId}`;
+     const myInit = {
+       body: {
+         ...userData,
+         updatedAt: new Date().toISOString()
+       }
+     };
+     return API.put(apiName, path, myInit);
+   };
+   
+   // Contas
+   export const createAccount = async (accountData) => {
+     const apiName = 'finappapi';
+     const path = '/accounts';
+     const myInit = {
+       body: {
+         ...accountData,
+         id: uuidv4(),
+         createdAt: new Date().toISOString()
+       }
+     };
+     return API.post(apiName, path, myInit);
+   };
+   
+   export const getAccounts = async (userId) => {
+     const apiName = 'finappapi';
+     const path = '/accounts';
+     const myInit = {
+       queryStringParameters: {
+         userId: userId
+       }
+     };
+     return API.get(apiName, path, myInit);
+   };
+   
+   // Transações
+   export const createTransaction = async (transactionData) => {
+     const apiName = 'finappapi';
+     const path = '/transactions';
+     const myInit = {
+       body: {
+         ...transactionData,
+         id: uuidv4(),
+         createdAt: new Date().toISOString(),
+         updatedAt: new Date().toISOString()
+       }
+     };
+     return API.post(apiName, path, myInit);
+   };
+   
+   export const getTransactions = async (accountIds) => {
+     const apiName = 'finappapi';
+     const path = '/transactions';
+     const myInit = {
+       queryStringParameters: {
+         accountIds: accountIds.join(',')
+       }
+     };
+     return API.get(apiName, path, myInit);
+   };
+   
+   export const updateTransaction = async (transactionId, transactionData) => {
+     const apiName = 'finappapi';
+     const path = `/transactions/${transactionId}`;
+     const myInit = {
+       body: {
+         ...transactionData,
+         updatedAt: new Date().toISOString()
+       }
+     };
+     return API.put(apiName, path, myInit);
+   };
+   
+   export const deleteTransaction = async (transactionId) => {
+     const apiName = 'finappapi';
+     const path = `/transactions/${transactionId}`;
+     return API.del(apiName, path, {});
+   };
+   ```
+
+4. **Aplicar mudanças**
+   ```bash
+   amplify push
+   ```
+
+### Etapa 4: Configuração do Armazenamento (S3)
+
+1. **Adicionar armazenamento**
+   ```bash
+   amplify add storage
+   ```
+   - Escolha: "Content"
+   - Nome do recurso: "finappstore"
+   - Permissões de bucket: "Auth users only"
+   - Permissões: "create/update, read, delete"
+   - Acesso para convidados: "No"
+
+2. **Implementar serviço de armazenamento**
+   - Crie `src/services/storageService.ts`:
+
+   ```typescript
+   import { Storage } from 'aws-amplify';
+   
+   // Upload de arquivo
+   export const uploadFile = async (file, path) => {
+     try {
+       const result = await Storage.put(path, file, {
+         contentType: file.type
+       });
+       return result.key;
+     } catch (error) {
+       console.error('Erro no upload:', error);
+       throw error;
+     }
+   };
+   
+   // Download de arquivo
+   export const getFileUrl = async (key) => {
+     try {
+       const url = await Storage.get(key);
+       return url;
+     } catch (error) {
+       console.error('Erro ao obter URL:', error);
+       throw error;
+     }
+   };
+   
+   // Excluir arquivo
+   export const deleteFile = async (key) => {
+     try {
+       await Storage.remove(key);
+     } catch (error) {
+       console.error('Erro ao excluir arquivo:', error);
+       throw error;
+     }
+   };
+   ```
+
+3. **Aplicar mudanças**
+   ```bash
+   amplify push
+   ```
+
+### Etapa 5: Adaptação do Código Frontend (React)
+
+1. **Instalar dependências AWS Amplify**
+   ```bash
+   npm install aws-amplify @aws-amplify/ui-react
+   ```
+
+2. **Configurar Amplify no projeto**
+   - Crie/edite `src/config/aws-config.ts`:
+
+   ```typescript
+   import { Amplify } from 'aws-amplify';
+   import awsconfig from '../aws-exports';
+   
+   Amplify.configure(awsconfig);
+   ```
+
+3. **Importar configuração no ponto de entrada**
+   - Edite `src/index.tsx`:
+
+   ```typescript
+   import React from 'react';
+   import ReactDOM from 'react-dom';
+   import './index.css';
+   import App from './App';
+   import './config/aws-config';
+   
+   ReactDOM.render(
+     <React.StrictMode>
+       <App />
+     </React.StrictMode>,
+     document.getElementById('root')
+   );
+   ```
+
+4. **Atualizar FinanceContext para usar DynamoDB**
+   - Edite `src/contexts/FinanceContext.tsx`:
+
+   ```typescript
+   import React, { createContext, useContext, useState, useEffect } from 'react';
+   import { useAuth } from './AuthContext';
+   import * as dynamoService from '../services/dynamoService';
+   import { Transaction, Account, Category } from '../types';
+   
+   // ... restante do código existente
+   
+   // Substituir métodos Firebase por chamadas ao DynamoDB
+   const addTransaction = async (transactionData) => {
+     if (!currentUser) throw new Error('Usuário não autenticado');
+     
+     try {
+       const result = await dynamoService.createTransaction({
+         ...transactionData,
+         userId: currentUser.username
+       });
+       
+       // Atualizar estado local
+       setTransactions(prev => [...prev, {
+         ...transactionData,
+         id: result.id
+       }]);
+       
+       return result.id;
+     } catch (error) {
+       console.error('Erro ao adicionar transação:', error);
+       throw error;
+     }
+   };
+   
+   // ... adaptar outros métodos de forma similar
+   ```
+
+5. **Atualizar o serviço de sincronização**
+   - Edite `src/services/syncService.ts` para usar o DynamoDB:
+
+   ```typescript
+   import { API } from 'aws-amplify';
+   import { Hub } from 'aws-amplify';
+   
+   // Implementar solução de sincronização com DynamoDB
+   // ...
+   ```
+
+### Etapa 6: Migração de Cloud Functions para Lambda
+
+1. **Adicionar funções Lambda**
+   ```bash
+   amplify add function
+   ```
+   - Escolha: "Lambda function"
+   - Nome: "processTransactions"
+   - Template: "Hello World"
+   - Acesso a outras recursos: "Yes"
+   - Categoria: "storage" (escolha seu bucket S3 e DynamoDB)
+   - Método avançado: "No"
+
+2. **Implementar funções Lambda**
+   - Edite a função gerada para implementar a lógica de negócios necessária
+
+3. **Adicionar API Gateway (se necessário)**
+   ```bash
+   amplify add api
+   ```
+   - Escolha: "REST"
+   - Nome: "finappprocessapi"
+   - Caminho: "/process"
+   - Usar função Lambda existente: "Yes"
+   - Função: "processTransactions"
+
+4. **Aplicar mudanças**
+   ```bash
+   amplify push
+   ```
+
+### Etapa 7: Configuração da Hospedagem Frontend
+
+1. **Adicionar hospedagem**
+   ```bash
+   amplify add hosting
+   ```
+   - Escolha: "Amazon CloudFront and S3"
+   - Tipo de ambiente: "PROD"
+   - Bucket: "Aceitar o nome sugerido"
+   - Índice: "index.html"
+   - Erro: "index.html"
+
+2. **Publicar aplicativo**
+   ```bash
+   npm run build
+   amplify publish
+   ```
+
+### Etapa 8: Testes e Otimização
+
+1. **Testar funcionalidades**
+   - Autenticação
+   - CRUD de contas e transações
+   - Sincronização entre dispositivos
+   - Funções Lambda
+   - Permissões e segurança
+
+2. **Configurar persistência offline**
+   - Edite `src/App.tsx` para configurar cache DataStore:
+
+   ```typescript
+   import { DataStore } from 'aws-amplify';
+   
+   // Configurar persistência offline
+   DataStore.configure({
+     maxRecordsToSync: 10000,
+     fullSyncInterval: 24 * 60, // minutos
+     syncPageSize: 1000
+   });
+   ```
+
+3. **Otimizar permissões IAM**
+   - Revisar e ajustar políticas geradas pelo Amplify
+   - Usar o princípio de menor privilégio
+
+## 6. Guia de Implantação
+
+1. **Fazer build da aplicação**
+   ```bash
+   npm run build
+   ```
+
+2. **Implantar para AWS**
+   ```bash
+   amplify publish
+   ```
+
+3. **Verificar implantação**
+   - Acesse o URL fornecido pelo Amplify após a publicação
+   - Verifique se todas as funcionalidades estão operando corretamente
+
+## 7. Recursos Adicionais
+
+### Documentação AWS
+- AWS Amplify: https://docs.amplify.aws/
+- Amazon Cognito: https://docs.aws.amazon.com/cognito/
+- Amazon DynamoDB: https://docs.aws.amazon.com/dynamodb/
+- AWS Lambda: https://docs.aws.amazon.com/lambda/
+- Amazon S3: https://docs.aws.amazon.com/s3/
+- Amazon CloudFront: https://docs.aws.amazon.com/cloudfront/
+
+### Tutoriais e Exemplos
+- AWS Amplify + React: https://docs.amplify.aws/start/q/integration/react/
+- Autenticação com Cognito: https://docs.amplify.aws/lib/auth/getting-started/q/platform/js/
+- DynamoDB CRUD: https://docs.amplify.aws/lib/datastore/getting-started/q/platform/js/
+- Armazenamento S3: https://docs.amplify.aws/lib/storage/getting-started/q/platform/js/
+
+### Ferramentas Úteis
+- AWS Console: https://console.aws.amazon.com/
+- AWS Amplify Console: https://console.aws.amazon.com/amplify/
+- AWS CloudFormation: https://console.aws.amazon.com/cloudformation/
+
+---
+
+**Observação:** Este guia pressupõe uma migração completa para a AWS. Se preferir uma abordagem mais gradual, considere migrar um serviço de cada vez, começando com a autenticação ou o banco de dados, enquanto mantém o restante no Firebase temporariamente. 

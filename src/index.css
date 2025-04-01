@@ -52,3 +52,67 @@
     @apply border-2 border-transparent bg-gradient-to-r from-rose-500 to-purple-500 bg-clip-border;
   }
 }
+
+/* Garantir que a página ocupe toda a altura da tela */
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow-x: hidden;
+  overscroll-behavior-y: none; /* Prevenir bounce effect em mobile */
+}
+
+/* Forçar renderização com GPU e melhorar transições */
+body {
+  transform: translateZ(0);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-y: scroll; /* Sempre mostrar barra de rolagem para evitar saltos */
+  background-color: white; /* Prevenir flash branco durante transições */
+  will-change: transform; /* Dica para usar aceleração por hardware */
+}
+
+/* Melhorias de animação para transições de página com melhor performance */
+main > div {
+  animation: page-fade-in 0.15s ease-out;
+  transform-origin: top center;
+  will-change: opacity, transform; /* Otimizar para animação */
+  backface-visibility: hidden; /* Reduzir flicker em alguns browsers */
+}
+
+@keyframes page-fade-in {
+  from {
+    opacity: 0.8;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Garantir que links não mudam de aparência durante navegação */
+a {
+  transition: color 0.2s, background-color 0.2s;
+  -webkit-tap-highlight-color: transparent; /* Remover highlight no toque em mobile */
+}
+
+/* Usar contain para melhorar a performance de renderização */
+.relative {
+  contain: layout style;
+}
+
+/* Ajuste para evitar flash durante transições de página */
+.main-content-wrapper {
+  min-height: 80vh; /* Altura mínima para evitar saltos de conteúdo */
+}
+
+/* Ajustes para melhorar desempenho em dispositivos de menor potência */
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

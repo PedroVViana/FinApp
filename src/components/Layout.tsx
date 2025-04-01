@@ -1,10 +1,11 @@
-import { ReactNode } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { ReactNode, useState, useEffect, useRef } from 'react';
+import { Link, useLocation, useNavigate, NavLink } from 'react-router-dom';
 import { Menu, Transition } from '@headlessui/react';
 import { Fragment } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { FiUser, FiLogOut, FiSettings } from 'react-icons/fi';
+import { FiUser, FiLogOut, FiSettings, FiHome, FiList, FiArrowDown, FiArrowUp, FiCreditCard, FiTag, FiTarget } from 'react-icons/fi';
 import SyncStatus from './SyncStatus';
+import { notifyNavigationStart, notifyNavigationEnd } from '../services/syncService';
 
 interface LayoutProps {
   children: ReactNode;
@@ -14,14 +15,59 @@ export function Layout({ children }: LayoutProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const { currentUser, userData, logout } = useAuth();
+  const [isNavigating, setIsNavigating] = useState(false);
+  
+  // Usar ref para rastrear o temporizador para limpar na desmontagem
+  const navigationTimerRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // Ref para rastrear a última navegação para evitar cliques repetidos no mesmo destino
+  const lastNavigationRef = useRef<{path: string, time: number} | null>(null);
 
   const menuItems = [
     { path: '/', label: 'Dashboard', icon: '📊' },
-    { path: '/despesas', label: 'Despesas', icon: '💰' },
+    { path: '/despesas', label: 'Despesas', icon: '��' },
+    { path: '/receitas', label: 'Receitas', icon: '💸' },
     { path: '/orcamento', label: 'Orçamento', icon: '📋' },
     { path: '/metas', label: 'Metas', icon: '🎯' },
     { path: '/relatorios', label: 'Relatórios', icon: '📈' },
   ];
+
+  // Limpar o estado de navegação quando a rota mudar
+  useEffect(() => {
+    setIsNavigating(false);
+    
+    // Limpar temporizadores pendentes
+    if (navigationTimerRef.current) {
+      clearTimeout(navigationTimerRef.current);
+      navigationTimerRef.current = null;
+    }
+  }, [location.pathname]);
+  
+  // Limpar temporizadores na desmontagem
+  useEffect(() => {
+    return () => {
+      if (navigationTimerRef.current) {
+        clearTimeout(navigationTimerRef.current);
+      }
+    };
+  }, []);
+  
+  // Antes de navegar para a página de Despesas, purge listeners ou notifique outros componentes
+  const prepareNavigationMaybeHeavyPage = (path: string) => {
+    // Se estivermos indo para a página de despesas, emitir um evento para que o contexto se prepare
+    if (path === '/despesas') {
+      const navigationEvent = new CustomEvent('prepareForDespesasNavigation', {
+        detail: { timestamp: Date.now() }
+      });
+      window.dispatchEvent(navigationEvent);
+      console.log("Notifying Finance Context to prepare for navigation to Despesas");
+      
+      // Dar um pequeno tempo para o contexto preparar a transição
+      return new Promise<void>(resolve => setTimeout(resolve, 100));
+    }
+    
+    return Promise.resolve();
+  };
 
   const handleLogout = async () => {
     try {
@@ -30,6 +76,87 @@ export function Layout({ children }: LayoutProps) {
     } catch (error) {
       console.error('Erro ao fazer logout:', error);
     }
+  };
+
+  // Função melhorada para navegação
+  const handleNavigate = async (event: React.MouseEvent<HTMLAnchorElement>, path: string) => {
+    // Prevenir o comportamento padrão para usar nossa navegação controlada
+    event.preventDefault();
+    
+    // Permitir o comportamento padrão do Link apenas se não estivermos já navegando
+    if (isNavigating) {
+      // Prevenir múltiplos cliques durante navegação
+      console.log('Já está navegando, ignorando clique adicional');
+      return;
+    }
+    
+    // Verificar se o usuário clicou várias vezes no mesmo link em um curto período
+    const now = Date.now();
+    if (lastNavigationRef.current && 
+        lastNavigationRef.current.path === path && 
+        now - lastNavigationRef.current.time < 1000) { // Dentro de 1 segundo
+      console.log('Clique repetido muito rápido, ignorando');
+      return;
+    }
+    
+    // Atualizar o último clique
+    lastNavigationRef.current = { path, time: now };
+
+    // Se estivermos na mesma página, apenas fazer scroll
+    if (location.pathname === path) {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+
+    // Para navegação real, marcar que estamos navegando
+    console.log(`Navegando para: ${path}`);
+    setIsNavigating(true);
+    
+    try {
+      // Preparar a navegação, especialmente para páginas com muitos dados
+      await prepareNavigationMaybeHeavyPage(path);
+      
+      // Forçar o restabelecimento de state após um curto período
+      // Isso ajuda a resolver problemas quando a navegação "trava"
+      navigationTimerRef.current = setTimeout(() => {
+        // Tentar a navegação
+        navigate(path);
+        
+        // Configurar um timeout de segurança para resetar o estado de navegação se algo falhar
+        setTimeout(() => {
+          if (isNavigating) {
+            console.log('Navigação parece estar travada, resetando estado');
+            setIsNavigating(false);
+          }
+        }, 3000); // 3 segundos para timeout de segurança
+      }, 50);
+    } catch (error) {
+      console.error('Erro durante navegação:', error);
+      setIsNavigating(false); // Resetar estado em caso de erro
+    }
+  };
+
+  // No final da navegação, adicionar:
+  useEffect(() => {
+    // Notificar o fim da navegação quando o componente for montado
+    notifyNavigationEnd();
+
+    return () => {
+      // Notificar o início da navegação quando o componente for desmontado
+      notifyNavigationStart();
+    };
+  }, [location.pathname]);
+
+  // Modificar a função de navegação:
+  const handleNavLinkClick = (e: React.MouseEvent<HTMLAnchorElement>, to: string) => {
+    if (location.pathname === to) {
+      // Evitar recarregar a mesma página
+      e.preventDefault();
+      return;
+    }
+    
+    // Notificar o início da navegação
+    notifyNavigationStart();
   };
 
   return (
@@ -64,20 +191,84 @@ export function Layout({ children }: LayoutProps) {
                     </Link>
                   </div>
                   <div className="hidden sm:ml-8 sm:flex sm:space-x-4">
-                    {menuItems.map((item) => (
-                      <Link
-                        key={item.path}
-                        to={item.path}
-                        className={`inline-flex items-center px-3 py-2 text-sm font-medium rounded-md transition-all duration-200 ${
-                          location.pathname === item.path
-                            ? 'bg-rose-50 text-rose-700'
-                            : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
-                        }`}
-                      >
-                        <span className="mr-2">{item.icon}</span>
-                        {item.label}
-                      </Link>
-                    ))}
+                    <NavLink
+                      to="/"
+                      className={({ isActive }) =>
+                        `flex items-center px-4 py-2 text-sm rounded-md transition-colors ${
+                          isActive
+                            ? 'text-rose-600 bg-rose-50 font-medium'
+                            : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+                        }`
+                      }
+                      onClick={(e) => handleNavLinkClick(e, "/")}
+                    >
+                      <FiHome className="mr-3" /> Dashboard
+                    </NavLink>
+                    <NavLink
+                      to="/despesas"
+                      className={({ isActive }) =>
+                        `flex items-center px-4 py-2 text-sm rounded-md transition-colors ${
+                          isActive
+                            ? 'text-rose-600 bg-rose-50 font-medium'
+                            : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+                        }`
+                      }
+                      onClick={(e) => handleNavLinkClick(e, "/despesas")}
+                    >
+                      <FiArrowDown className="mr-3" /> Despesas
+                    </NavLink>
+                    <NavLink
+                      to="/receitas"
+                      className={({ isActive }) =>
+                        `flex items-center px-4 py-2 text-sm rounded-md transition-colors ${
+                          isActive
+                            ? 'text-rose-600 bg-rose-50 font-medium'
+                            : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+                        }`
+                      }
+                      onClick={(e) => handleNavLinkClick(e, "/receitas")}
+                    >
+                      <FiArrowUp className="mr-3" /> Receitas
+                    </NavLink>
+                    <NavLink
+                      to="/orcamento"
+                      className={({ isActive }) =>
+                        `flex items-center px-4 py-2 text-sm rounded-md transition-colors ${
+                          isActive
+                            ? 'text-rose-600 bg-rose-50 font-medium'
+                            : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+                        }`
+                      }
+                      onClick={(e) => handleNavLinkClick(e, "/orcamento")}
+                    >
+                      <FiList className="mr-3" /> Orçamento
+                    </NavLink>
+                    <NavLink
+                      to="/metas"
+                      className={({ isActive }) =>
+                        `flex items-center px-4 py-2 text-sm rounded-md transition-colors ${
+                          isActive
+                            ? 'text-rose-600 bg-rose-50 font-medium'
+                            : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+                        }`
+                      }
+                      onClick={(e) => handleNavLinkClick(e, "/metas")}
+                    >
+                      <FiTarget className="mr-3" /> Metas
+                    </NavLink>
+                    <NavLink
+                      to="/relatorios"
+                      className={({ isActive }) =>
+                        `flex items-center px-4 py-2 text-sm rounded-md transition-colors ${
+                          isActive
+                            ? 'text-rose-600 bg-rose-50 font-medium'
+                            : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+                        }`
+                      }
+                      onClick={(e) => handleNavLinkClick(e, "/relatorios")}
+                    >
+                      <FiArrowUp className="mr-3" /> Relatórios
+                    </NavLink>
                   </div>
                 </div>
 
@@ -198,9 +389,7 @@ export function Layout({ children }: LayoutProps) {
         </header>
 
         <main className="relative max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
-          <div className="[&>*]:bg-white/80 [&>*]:backdrop-blur-sm">
-            {children}
-          </div>
+          {children}
         </main>
       </div>
     </div>

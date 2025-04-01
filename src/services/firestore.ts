@@ -12,10 +12,11 @@ import {
   serverTimestamp,
   orderBy,
   limit,
-  addDoc
+  addDoc,
+  writeBatch
 } from 'firebase/firestore';
 import { db } from '../config/firebase';
-import { Account, Transaction, Category, Goal, User } from '../types';
+import { Account, Transaction, Category, Goal, User, DEFAULT_CATEGORIES } from '../types';
 import { validateTransaction, validateAccount, validateGoal } from './dataValidation';
 
 /**
@@ -162,45 +163,6 @@ export const updateAccount = async (accountId: string, accountData: Partial<Acco
   }
 };
 
-/**
- * Exclui uma conta financeira
- * @param accountId ID da conta
- * @param userId ID do usuário proprietário (para verificação)
- */
-export const deleteAccount = async (accountId: string, userId: string): Promise<void> => {
-  try {
-    // Obter conta para verificar propriedade
-    const accountRef = doc(db, 'accounts', accountId);
-    const accountSnap = await getDoc(accountRef);
-    
-    if (!accountSnap.exists()) {
-      throw new Error('Conta não encontrada');
-    }
-    
-    const existingAccount = accountSnap.data();
-    if (existingAccount.userId !== userId) {
-      throw new Error('Sem permissão para excluir esta conta');
-    }
-    
-    // Verificar se há transações associadas
-    const transactionsQuery = query(
-      collection(db, 'transactions'), 
-      where('accountId', '==', accountId),
-      limit(1)
-    );
-    
-    const transactionsSnap = await getDocs(transactionsQuery);
-    if (!transactionsSnap.empty) {
-      throw new Error('Não é possível excluir uma conta com transações. Exclua as transações primeiro.');
-    }
-    
-    await deleteDoc(accountRef);
-  } catch (error) {
-    console.error('Erro ao excluir conta:', error);
-    throw error;
-  }
-};
-
 // TRANSAÇÕES
 
 /**
@@ -284,87 +246,100 @@ export const verificarECriarContaPrincipal = async (userId: string): Promise<str
   }
 };
 
-// Modificar a função addTransaction para usar a conta principal se necessário
+/**
+ * Adiciona uma nova transação
+ * @param transactionData Dados da transação
+ * @returns ID da transação criada
+ */
 export const addTransaction = async (transactionData: any): Promise<string> => {
   try {
-    console.log("Tentando adicionar transação:", transactionData);
+    console.log('Iniciando adição de transação:', { ...transactionData });
     
-    // Validação básica
+    // Validar dados da transação
     if (!transactionData.accountId) {
-      throw new Error("O campo accountId é obrigatório");
+      throw new Error('ID da conta é obrigatório');
     }
     
-    // Garantir que userId está definido
     if (!transactionData.userId) {
-      console.error("ERRO CRÍTICO: userId não definido na transação. Isso causará problemas de sincronização.");
-      throw new Error("O campo userId é obrigatório para criar transações");
+      throw new Error('ID do usuário é obrigatório');
     }
     
-    // Log detalhado dos campos importantes
-    console.log("Dados críticos da transação:", {
-      userId: transactionData.userId,
-      accountId: transactionData.accountId,
-      type: transactionData.type,
-      amount: transactionData.amount,
-      date: transactionData.date
-    });
-    
-    // Verificar e corrigir campo "tags" - CORREÇÃO PRINCIPAL
-    if (transactionData.tags === undefined) {
-      console.log("Corrigindo campo tags undefined para array vazio");
-      transactionData.tags = [];
+    if (transactionData.amount === undefined || isNaN(Number(transactionData.amount))) {
+      throw new Error('Valor da transação é obrigatório e deve ser um número');
     }
     
-    // Remover todos os campos com valor undefined
+    // Limpar dados para remover campos indefinidos e formatá-los corretamente
     const dadosLimpos: Record<string, any> = {};
+    
     Object.entries(transactionData).forEach(([key, value]) => {
       if (value !== undefined) {
         dadosLimpos[key] = value;
-      } else {
-        console.log(`Removendo campo ${key} com valor undefined`);
       }
     });
     
-    // Adicionar timestamps se não existirem
-    if (!dadosLimpos.createdAt) {
-      dadosLimpos.createdAt = new Date().toISOString();
+    // Garantir que tags seja um array
+    if (!dadosLimpos.tags || !Array.isArray(dadosLimpos.tags)) {
+      dadosLimpos.tags = [];
     }
     
-    if (!dadosLimpos.updatedAt) {
-      dadosLimpos.updatedAt = new Date().toISOString();
-    }
-    
-    // Converter para timestamp do Firestore se necessário
-    if (typeof dadosLimpos.date === 'string') {
-      dadosLimpos.date = Timestamp.fromDate(new Date(dadosLimpos.date));
-    } else if (dadosLimpos.date instanceof Date) {
-      dadosLimpos.date = Timestamp.fromDate(dadosLimpos.date);
-    }
-    
-    console.log("Dados da transação processados:", {
-      ...dadosLimpos,
-      date: dadosLimpos.date ? "Timestamp válido" : "ERRO: Data inválida"
-    });
-    
-    // Adicionar a transação ao Firestore
-    const docRef = await addDoc(collection(db, 'transactions'), dadosLimpos);
-    console.log(`Transação criada com sucesso: ${docRef.id}`);
-    
-    // Verificar se a transação foi realmente criada
-    const verificacao = await getDoc(docRef);
-    if (verificacao.exists()) {
-      console.log(`Verificação: transação ${docRef.id} salva corretamente com userId: ${verificacao.data().userId}`);
+    // Processar a data
+    if (dadosLimpos.date) {
+      try {
+        // Verificar se é uma string no formato YYYY-MM-DD
+        if (typeof dadosLimpos.date === 'string' && dadosLimpos.date.match(/^\d{4}-\d{2}-\d{2}$/)) {
+          // Data já está no formato correto
+          console.log('Data no formato correto: ', dadosLimpos.date);
+        } else {
+          // Tentar converter a data
+          const dataObj = new Date(dadosLimpos.date);
+          
+          if (isNaN(dataObj.getTime())) {
+            console.error('Data inválida, usando data atual:', dadosLimpos.date);
+            dadosLimpos.date = new Date().toISOString().split('T')[0];
+          } else {
+            dadosLimpos.date = dataObj.toISOString().split('T')[0];
+          }
+        }
+      } catch (err) {
+        console.error('Erro ao processar data:', err);
+        dadosLimpos.date = new Date().toISOString().split('T')[0];
+      }
     } else {
-      console.error(`ERRO: Transação ${docRef.id} não encontrada após criação!`);
+      // Se não houver data, usar a data atual
+      dadosLimpos.date = new Date().toISOString().split('T')[0];
     }
     
-    // Atualizar o saldo da conta
-    await updateAccountBalance(dadosLimpos.accountId, dadosLimpos.type, dadosLimpos.amount, dadosLimpos.userId);
+    // Converter valor para número
+    dadosLimpos.amount = Number(dadosLimpos.amount);
+    
+    // Garantir que o timestamp seja adicionado
+    dadosLimpos.createdAt = serverTimestamp();
+    dadosLimpos.updatedAt = serverTimestamp();
+    
+    // Adicionar transação ao Firestore
+    console.log('Dados limpos para Firestore:', dadosLimpos);
+    const transactionsCollection = collection(db, 'transactions');
+    const docRef = await addDoc(transactionsCollection, dadosLimpos);
+    
+    console.log(`Transação adicionada com sucesso. ID: ${docRef.id}`);
+    
+    // Atualizar saldo da conta se não for uma transação pendente
+    if (dadosLimpos.pending !== true) {
+      await updateAccountBalance(
+        dadosLimpos.accountId,
+        dadosLimpos.type,
+        dadosLimpos.amount,
+        dadosLimpos.userId
+      );
+      console.log(`Saldo da conta atualizado para transação ${docRef.id}`);
+    } else {
+      console.log(`Transação ${docRef.id} é pendente, saldo não atualizado`);
+    }
     
     return docRef.id;
   } catch (error) {
-    console.error("Erro ao adicionar transação:", error);
-    throw new Error(`Erro ao adicionar transação: ${error instanceof Error ? error.message : String(error)}`);
+    console.error('Erro ao adicionar transação:', error);
+    throw error;
   }
 };
 
@@ -758,4 +733,91 @@ export const getAccount = async (
     id: accountSnap.id,
     ...accountData
   };
+};
+
+export const createDefaultCategories = async (userId: string): Promise<void> => {
+  try {
+    console.log('Criando categorias padrão para o usuário:', userId);
+    
+    const categoriesRef = collection(db, 'categories');
+    const batch = writeBatch(db);
+    
+    for (const category of DEFAULT_CATEGORIES) {
+      const docRef = doc(categoriesRef);
+      batch.set(docRef, {
+        ...category,
+        userId,
+        isDefault: true,
+        id: `default-${category.type}-${category.name.toLowerCase().replace(/\s+/g, '-')}`,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+    }
+    
+    await batch.commit();
+    console.log('Categorias padrão criadas com sucesso');
+  } catch (error) {
+    console.error('Erro ao criar categorias padrão:', error);
+    throw error;
+  }
+};
+
+/**
+ * Verifica se o usuário tem categorias padrão e cria se necessário
+ * @param userId ID do usuário
+ */
+export const ensureDefaultCategories = async (userId: string): Promise<void> => {
+  try {
+    const categoriesRef = collection(db, 'categories');
+    const q = query(categoriesRef, where('userId', '==', userId));
+    const snapshot = await getDocs(q);
+    
+    if (snapshot.empty) {
+      await createDefaultCategories(userId);
+    } else {
+      console.log('Usuário já possui categorias');
+    }
+  } catch (error) {
+    console.error('Erro ao verificar categorias padrão:', error);
+    throw error;
+  }
+};
+
+/**
+ * Exclui uma conta financeira
+ * @param accountId ID da conta
+ * @param userId ID do usuário proprietário (para verificação)
+ */
+export const deleteAccount = async (accountId: string, userId: string): Promise<void> => {
+  try {
+    // Obter conta para verificar propriedade
+    const accountRef = doc(db, 'accounts', accountId);
+    const accountSnap = await getDoc(accountRef);
+    
+    if (!accountSnap.exists()) {
+      throw new Error('Conta não encontrada');
+    }
+    
+    const existingAccount = accountSnap.data();
+    if (existingAccount.userId !== userId) {
+      throw new Error('Sem permissão para excluir esta conta');
+    }
+    
+    // Verificar se há transações associadas
+    const transactionsQuery = query(
+      collection(db, 'transactions'), 
+      where('accountId', '==', accountId),
+      limit(1)
+    );
+    
+    const transactionsSnap = await getDocs(transactionsQuery);
+    if (!transactionsSnap.empty) {
+      throw new Error('Não é possível excluir uma conta com transações. Exclua as transações primeiro.');
+    }
+    
+    await deleteDoc(accountRef);
+  } catch (error) {
+    console.error('Erro ao excluir conta:', error);
+    throw error;
+  }
 }; 

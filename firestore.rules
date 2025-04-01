@@ -8,93 +8,136 @@ service cloud.firestore {
     
     // Função para verificar se o usuário é o proprietário do documento
     function isOwner(userId) {
-      return isAuthenticated() && request.auth.uid == userId;
+      return request.auth.uid == userId;
+    }
+    
+    function isPremiumUser(userId) {
+      return get(/databases/$(database)/documents/users/$(userId)).data.planType in ['pro', 'enterprise'];
     }
     
     // Função para validar estrutura de dados
-    function validTransaction(data) {
-      return data.size() >= 6 
-        && 'accountId' in data && data.accountId is string
-        && 'userId' in data && data.userId is string
-        && 'type' in data && (data.type == 'income' || data.type == 'expense')
-        && 'amount' in data && data.amount is number && data.amount > 0
-        && 'category' in data && data.category is string
-        && 'description' in data && data.description is string
-        && 'date' in data 
-        && (!('tags' in data) || data.tags is list); // Tornando tags opcional, mas se existir, deve ser uma lista
+    function isValidTransaction() {
+      let data = request.resource.data;
+      let basicFields = data.keys().hasAll(['userId', 'amount', 'date', 'category', 'type']) &&
+             data.userId is string &&
+             data.amount is number &&
+             (data.date is timestamp || data.date is string) &&
+             data.category is string &&
+             (data.type == 'income' || data.type == 'expense');
+
+      let proFieldsValid = true;
+      let hasProFields = data.keys().hasAny(['recorrencia', 'anexos', 'lembretes']);
+
+      return basicFields && (!hasProFields || (
+        (!data.keys().hasAny(['recorrencia']) || (
+          data.recorrencia.frequency in ['monthly', 'weekly', 'yearly'] &&
+          (data.recorrencia.nextDueDate is timestamp || data.recorrencia.nextDueDate is string || !data.recorrencia.keys().hasAny(['nextDueDate'])) &&
+          data.recorrencia.active is bool
+        )) &&
+        (!data.keys().hasAny(['anexos']) || (
+          data.anexos is list &&
+          data.anexos.size() <= 10
+        )) &&
+        (!data.keys().hasAny(['lembretes']) || (
+          data.lembretes is list &&
+          data.lembretes.size() <= 5
+        ))
+      ));
     }
     
     // Usuários
     match /users/{userId} {
-      // Usuários só podem ler e escrever seus próprios dados
       allow read, update, delete: if isOwner(userId);
-      // Qualquer usuário autenticado pode criar seu perfil
       allow create: if isAuthenticated() && request.auth.uid == userId;
     }
     
     // Contas financeiras
     match /accounts/{accountId} {
-      // Verificar se a conta pertence ao usuário autenticado ou está sendo criada pelo usuário autenticado
-      allow read: if isAuthenticated() && (
-        resource == null || resource.data.userId == request.auth.uid
-      );
-      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
-      allow update, delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow read: if isAuthenticated() && isOwner(resource.data.userId);
+      allow create: if isAuthenticated() && 
+                   isOwner(request.resource.data.userId) &&
+                   request.resource.data.keys().hasAll(['name', 'balance', 'userId']);
+      allow update: if isAuthenticated() && 
+                   isOwner(resource.data.userId) &&
+                   request.resource.data.keys().hasAll(['name', 'balance', 'userId']);
+      allow delete: if isAuthenticated() && isOwner(resource.data.userId);
     }
     
     // Transações
     match /transactions/{transactionId} {
-      // Permitir leitura para transações de contas que o usuário possui
-      allow read: if isAuthenticated() && (
-        resource == null || 
-        get(/databases/$(database)/documents/accounts/$(resource.data.accountId)).data.userId == request.auth.uid
-      );
+      allow read: if isAuthenticated() && isOwner(resource.data.userId);
       
-      // Permitir criação se a conta associada pertence ao usuário e os dados são válidos
       allow create: if isAuthenticated() && 
-        get(/databases/$(database)/documents/accounts/$(request.resource.data.accountId)).data.userId == request.auth.uid &&
-        validTransaction(request.resource.data);
+                   isOwner(request.resource.data.userId) && 
+                   isValidTransaction() &&
+                   (
+                     !request.resource.data.keys().hasAny(['recorrencia', 'anexos', 'lembretes']) ||
+                     isPremiumUser(request.auth.uid)
+                   );
       
-      // Permitir atualização e exclusão se a conta associada pertence ao usuário
-      allow update, delete: if isAuthenticated() && 
-        get(/databases/$(database)/documents/accounts/$(resource.data.accountId)).data.userId == request.auth.uid;
+      allow update: if isAuthenticated() && 
+                   isOwner(resource.data.userId) && 
+                   isValidTransaction() &&
+                   (
+                     !request.resource.data.keys().hasAny(['recorrencia', 'anexos', 'lembretes']) ||
+                     isPremiumUser(request.auth.uid)
+                   );
+      
+      allow delete: if isAuthenticated() && isOwner(resource.data.userId);
+    }
+    
+    // Anexos (subcoleção de transações)
+    match /transactions/{transactionId}/attachments/{attachmentId} {
+      allow read: if isAuthenticated() && 
+                   isOwner(get(/databases/$(database)/documents/transactions/$(transactionId)).data.userId);
+      
+      allow write: if isAuthenticated() && 
+                   isOwner(get(/databases/$(database)/documents/transactions/$(transactionId)).data.userId) &&
+                   isPremiumUser(request.auth.uid);
+    }
+
+    // Lembretes (subcoleção de transações)
+    match /transactions/{transactionId}/reminders/{reminderId} {
+      allow read: if isAuthenticated() && 
+                   isOwner(get(/databases/$(database)/documents/transactions/$(transactionId)).data.userId);
+      
+      allow write: if isAuthenticated() && 
+                   isOwner(get(/databases/$(database)/documents/transactions/$(transactionId)).data.userId) &&
+                   isPremiumUser(request.auth.uid);
     }
     
     // Categorias
     match /categories/{categoryId} {
-      // Qualquer usuário autenticado pode ler todas as categorias
-      allow read: if isAuthenticated();
-      
-      // Permitir criação se o usuário está definindo seu ID como proprietário
+      allow read: if isAuthenticated() && isOwner(resource.data.userId);
       allow create: if isAuthenticated() && 
-        (!('userId' in request.resource.data) || request.resource.data.userId == request.auth.uid);
-      
-      // Permitir atualização/exclusão apenas para categorias do usuário (não padrão)
-      allow update, delete: if isAuthenticated() && 
-        'userId' in resource.data && 
-        resource.data.userId == request.auth.uid && 
-        !resource.data.id.startsWith('default-');
+                   isOwner(request.resource.data.userId) &&
+                   request.resource.data.keys().hasAll(['name', 'type', 'userId']);
+      allow update: if isAuthenticated() && 
+                   isOwner(resource.data.userId) &&
+                   request.resource.data.keys().hasAll(['name', 'type', 'userId']);
+      allow delete: if isAuthenticated() && isOwner(resource.data.userId);
     }
     
     // Metas financeiras
     match /goals/{goalId} {
-      // Metas só podem ser acessadas pelo proprietário
-      allow read: if isAuthenticated() && (
-        resource == null || resource.data.userId == request.auth.uid
-      );
-      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
-      allow update, delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow read: if isAuthenticated() && (resource == null || isOwner(resource.data.userId));
+      allow create: if isAuthenticated() && isOwner(request.resource.data.userId);
+      allow update, delete: if isAuthenticated() && isOwner(resource.data.userId);
     }
     
     // Configurações do usuário
     match /settings/{userId} {
-      // Configurações só podem ser acessadas pelo proprietário
       allow read, write: if isOwner(userId);
     }
     
     // Proteção padrão: negar acesso a tudo que não foi explicitamente permitido
     match /{document=**} {
       allow read, write: if false;
+    }
+
+    // Regra para teste de conectividade
+    match /connectivity_test/{docId} {
+      allow read: if isAuthenticated();
     }
   }
 } 

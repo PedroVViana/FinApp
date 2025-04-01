@@ -1,7 +1,7 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback, useRef } from 'react';
 import { useAuth } from './AuthContext';
 import * as firestoreService from '../services/firestore';
-import * as syncService from '../services/syncService';
+import { enhancedSyncService } from '../services/enhancedSyncService';
 import * as queueService from '../services/queueService';
 import { Account, Transaction, Category, Goal, Filter } from '../types';
 import { useNotification } from '../components/Notification';
@@ -46,7 +46,7 @@ export const useFinance = () => {
 
 export const FinanceProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const { currentUser: user } = useAuth();
-  const { success, error, info } = useNotification();
+  const { success, error: showError, info } = useNotification();
   
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -54,166 +54,103 @@ export const FinanceProvider: React.FC<{ children: ReactNode }> = ({ children })
   const [goals, setGoals] = useState<Goal[]>([]);
   const [filters, setFilters] = useState<Filter[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [errorMsg, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [isOffline, setIsOffline] = useState<boolean>(!navigator.onLine);
   const [pendingOperationsCount, setPendingOperationsCount] = useState<number>(0);
   
+  // Ref para controlar se o componente está montado
+  const isMounted = React.useRef(true);
+  
   // Função para atualizar o número de operações pendentes
   const updatePendingCount = async () => {
-    if (user) {
+    if (user && isMounted.current) {
       const count = await queueService.getPendingOperationsCount();
       setPendingOperationsCount(count);
     }
   };
   
+  // Efeito para controlar o ciclo de vida do componente
+  useEffect(() => {
+    isMounted.current = true;
+    
+    // Configurar listeners quando o usuário autenticar
+    if (user) {
+      setIsLoading(true);
+      setError(null);
+      
+      try {
+        // Configurar listener para transações usando o serviço otimizado
+        const unsubscribeTransactions = enhancedSyncService.setupTransactionsListener(
+          user.uid,
+          [],
+          (updatedTransactions) => {
+            if (isMounted.current) {
+              console.log('Transações atualizadas:', updatedTransactions);
+              setTransactions(updatedTransactions);
+            }
+          }
+        );
+
+        // Configurar listener para categorias
+        const unsubscribeCategories = enhancedSyncService.setupCategoriesListener(
+          user.uid,
+          (updatedCategories) => {
+            if (isMounted.current) {
+              setCategories(updatedCategories);
+            }
+          }
+        );
+        
+        // Sincronizar dados offline se houver
+        enhancedSyncService.syncOfflineData().catch(console.error);
+        
+        return () => {
+          isMounted.current = false;
+          unsubscribeTransactions();
+          unsubscribeCategories();
+          enhancedSyncService.destroy();
+        };
+      } catch (err) {
+        console.error('Erro ao configurar sincronização:', err);
+        setError('Falha ao carregar dados financeiros.');
+      } finally {
+        setIsLoading(false);
+      }
+    }
+    
+    return () => {
+      isMounted.current = false;
+    };
+  }, [user]);
+  
   // Monitorar status de conexão
   useEffect(() => {
-    const handleOnline = () => {
+    const handleOnline = async () => {
       setIsOffline(false);
-      queueService.processPendingQueue()
-        .then(count => {
-          if (count > 0) {
-            console.log(`${count} operações pendentes processadas com sucesso.`);
-          }
-          updatePendingCount();
-        })
-        .catch(console.error);
+      try {
+        const isOnline = await enhancedSyncService.isOnline();
+        if (isOnline) {
+          await enhancedSyncService.syncOfflineData();
+          info('Conexão restabelecida. Sincronizando dados...');
+        }
+      } catch (err) {
+        console.error('Erro ao sincronizar dados:', err);
+      }
     };
     
     const handleOffline = () => {
       setIsOffline(true);
+      info('Modo offline ativado. As alterações serão sincronizadas quando a conexão for restabelecida.');
     };
     
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
     
-    // Configurar o processador de fila
-    const unsubscribeQueue = queueService.setupQueueProcessor();
-    
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
-      unsubscribeQueue();
     };
-  }, []);
-  
-  // Configurar listeners quando o usuário autenticar
-  useEffect(() => {
-    if (!user) {
-      setAccounts([]);
-      setTransactions([]);
-      setCategories([]);
-      setGoals([]);
-      setFilters([]);
-      setIsLoading(false);
-      return;
-    }
-    
-    setIsLoading(true);
-    setError(null);
-    
-    // Array para armazenar funções de limpeza dos listeners
-    const unsubscribes: (() => void)[] = [];
-    
-    try {
-      // Configurar listener para contas
-      const unsubscribeAccounts = syncService.setupAccountsListener(
-        user.uid,
-        (updatedAccounts) => {
-          setAccounts(updatedAccounts);
-        }
-      );
-      unsubscribes.push(unsubscribeAccounts);
-      
-      // Configurar listener para categorias
-      const unsubscribeCategories = syncService.setupCategoriesListener(
-        user.uid,
-        (updatedCategories) => {
-          setCategories(updatedCategories);
-        }
-      );
-      unsubscribes.push(unsubscribeCategories);
-      
-      // Configurar listener para metas
-      const unsubscribeGoals = syncService.setupGoalsListener(
-        user.uid,
-        (updatedGoals) => {
-          setGoals(updatedGoals);
-        }
-      );
-      unsubscribes.push(unsubscribeGoals);
-      
-      // Monitorar status de conexão
-      const unsubscribeConnection = syncService.monitorConnectionStatus(
-        (status) => {
-          setIsOffline(status === 'offline');
-        }
-      );
-      unsubscribes.push(unsubscribeConnection);
-      
-      // Atualizar contador de operações pendentes
-      updatePendingCount();
-      
-    } catch (err) {
-      console.error('Erro ao configurar listeners:', err);
-      setError('Falha ao carregar dados financeiros.');
-    } finally {
-      setIsLoading(false);
-    }
-    
-    // Cleanup function
-    return () => {
-      unsubscribes.forEach(unsubscribe => unsubscribe());
-    };
-  }, [user]);
-  
-  // Efeito especial para transações que depende das contas
-  useEffect(() => {
-    if (!user || accounts.length === 0) {
-      return;
-    }
-    
-    const accountIds = accounts.map(account => account.id);
-    
-    console.log('Configurando listener para transações de', accountIds.length, 'contas', accountIds);
-    
-    const unsubscribeTransactions = syncService.setupTransactionsListener(
-      accountIds,
-      (updatedTransactions) => {
-        console.log('Recebidas', updatedTransactions.length, 'transações atualizadas');
-        
-        // MODIFICAÇÃO: Filtrar apenas transações do usuário atual
-        const userTransactions = updatedTransactions.filter(t => t.userId === user.uid);
-        
-        if (userTransactions.length !== updatedTransactions.length) {
-          console.warn(`Filtradas ${updatedTransactions.length - userTransactions.length} transações de outros usuários`);
-        }
-        
-        setTransactions(prevTransactions => {
-          // Identificar transações pendentes locais que não foram sincronizadas ainda
-          const pendingLocalTransactions = prevTransactions.filter(t => 
-            t.id.startsWith('temp-') && !userTransactions.some(ut => ut.id === t.id)
-          );
-          
-          if (pendingLocalTransactions.length > 0) {
-            console.log('Mantendo', pendingLocalTransactions.length, 'transações locais pendentes');
-          }
-          
-          const combinedTransactions = [...userTransactions, ...pendingLocalTransactions];
-          console.log('Total de transações após combinação:', combinedTransactions.length);
-          
-          return combinedTransactions;
-        });
-      }
-    );
-    
-    return () => {
-      if (unsubscribeTransactions) {
-        console.log('Cancelando listener de transações');
-        unsubscribeTransactions();
-      }
-    };
-  }, [user, accounts]);
+  }, [info]);
   
   // Funções para operações CRUD
   const addAccount = async (account: Omit<Account, 'id'>): Promise<string> => {
@@ -227,7 +164,7 @@ export const FinanceProvider: React.FC<{ children: ReactNode }> = ({ children })
       updatePendingCount();
       
       // Atualizamos o estado otimisticamente se for uma operação temporária
-      if (id.startsWith('temp-')) {
+      if (id.startsWith('temp-') && isMounted.current) {
         const newAccount: Account = {
           ...account,
           id,
@@ -255,19 +192,21 @@ export const FinanceProvider: React.FC<{ children: ReactNode }> = ({ children })
       // Atualizar na base de dados
       await firestoreService.updateAccount(id, data, user.uid);
       
-      // Atualizar no estado local
-      setAccounts(prev => 
-        prev.map(account => 
-          account.id === id
-            ? { ...account, ...data, updatedAt: new Date().toISOString() }
-            : account
-        )
-      );
+      // Atualizar no estado local se o componente ainda estiver montado
+      if (isMounted.current) {
+        setAccounts(prev => 
+          prev.map(account => 
+            account.id === id
+              ? { ...account, ...data, updatedAt: new Date().toISOString() }
+              : account
+          )
+        );
+      }
       
       success('Conta atualizada com sucesso');
     } catch (err) {
       console.error('Erro ao atualizar conta:', err);
-      error(`Falha ao atualizar conta: ${err instanceof Error ? err.message : 'Erro desconhecido'}`);
+      showError(`Falha ao atualizar conta: ${err instanceof Error ? err.message : 'Erro desconhecido'}`);
       throw err;
     }
   };
@@ -289,10 +228,12 @@ export const FinanceProvider: React.FC<{ children: ReactNode }> = ({ children })
         success('Conta excluída com sucesso');
       } catch (err) {
         console.error('Erro ao excluir conta:', err);
-        error(`Falha ao excluir conta: ${err instanceof Error ? err.message : 'Erro desconhecido'}`);
+        showError(`Falha ao excluir conta: ${err instanceof Error ? err.message : 'Erro desconhecido'}`);
         
-        // Restaurar estado local
-        setAccounts(accountsCopy);
+        // Restaurar estado local se o componente ainda estiver montado
+        if (isMounted.current) {
+          setAccounts(accountsCopy);
+        }
         throw err;
       }
     } catch (error) {
@@ -302,7 +243,7 @@ export const FinanceProvider: React.FC<{ children: ReactNode }> = ({ children })
       try {
         // Adicionar a conta de volta ao state (versão simplificada)
         const deletedAccount = accounts.find(a => a.id === id);
-        if (deletedAccount) {
+        if (deletedAccount && isMounted.current) {
           setAccounts(prev => [...prev, deletedAccount]);
         }
       } catch (e) {
@@ -313,219 +254,68 @@ export const FinanceProvider: React.FC<{ children: ReactNode }> = ({ children })
     }
   };
   
-  const addTransaction = async (transaction: Omit<Transaction, 'id'>): Promise<string> => {
+  // Funções para manipular transações
+  const addTransaction = useCallback(async (transaction: Omit<Transaction, 'id'>): Promise<string> => {
     if (!user) throw new Error('Usuário não autenticado');
     
     try {
-      console.log(`Tentando adicionar transação para usuário ${user.uid}:`, transaction);
+      console.log('Adicionando nova transação:', transaction);
       
-      // Garantir que userId está explicitamente definido no objeto de transação
-      const transactionWithUserId = {
-        ...transaction,
-        userId: user.uid
-      };
+      // Usar o serviço de sincronização aprimorado
+      const id = await enhancedSyncService.addTransaction(transaction, user.uid);
       
-      // Verificar se a data é válida
-      if (transactionWithUserId.date) {
-        try {
-          // Se é uma string, tentar converter para um objeto Date válido
-          if (typeof transactionWithUserId.date === 'string') {
-            new Date(transactionWithUserId.date).toISOString();
-          }
-        } catch (e) {
-          console.error("Data inválida na transação:", transactionWithUserId.date);
-          throw new Error(`Data inválida: ${transactionWithUserId.date}`);
-        }
-      }
-      
-      // Garantir que createdAt e updatedAt estão definidos
-      if (!transactionWithUserId.createdAt) {
-        transactionWithUserId.createdAt = new Date().toISOString();
-      }
-      
-      if (!transactionWithUserId.updatedAt) {
-        transactionWithUserId.updatedAt = new Date().toISOString();
-      }
-      
-      console.log("Dados finais da transação:", transactionWithUserId);
-      
-      // Usar o serviço de fila para adicionar a transação
-      const id = await queueService.addTransaction(transactionWithUserId, user.uid);
-      
-      console.log(`Transação adicionada com ID: ${id}, usuário: ${user.uid}`);
-      
-      // Atualizar o contador de operações pendentes
-      updatePendingCount();
-      
-      // Atualizamos o estado otimisticamente se for uma operação temporária
-      if (id.startsWith('temp-')) {
+      // Atualizar o estado otimisticamente
+      if (isMounted.current) {
         const newTransaction: Transaction = {
-          ...transactionWithUserId,
+          ...transaction,
           id,
           userId: user.uid,
-          pending: true // Marcar como pendente
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          pending: true
         };
         
-        console.log('Adicionando transação otimisticamente ao estado:', newTransaction);
         setTransactions(prev => [...prev, newTransaction]);
-      } else {
-        // Se ID for do Firestore, verificar se precisa atualizar o estado local
-        setTimeout(() => {
-          setTransactions(prev => {
-            // Verificar se a transação já existe no estado
-            const exists = prev.some(t => t.id === id);
-            if (!exists) {
-              console.log(`Transação ${id} não encontrada no estado após 1s, adicionando localmente.`);
-              // Criar objeto de transação completo
-              const newTransaction: Transaction = {
-                ...transactionWithUserId,
-                id,
-              };
-              return [...prev, newTransaction];
-            }
-            console.log(`Transação ${id} já existe no estado.`);
-            return prev;
-          });
-        }, 1000);
       }
       
+      success('Transação adicionada com sucesso!');
       return id;
-    } catch (error) {
-      console.error('Erro ao adicionar transação:', error);
-      setError('Falha ao adicionar transação.');
-      throw error;
+    } catch (err) {
+      console.error('Erro ao adicionar transação:', err);
+      showError(`Erro ao adicionar transação: ${err instanceof Error ? err.message : 'Erro desconhecido'}`);
+      throw err;
     }
-  };
+  }, [success, showError, user]);
   
-  const updateTransaction = async (id: string, transactionUpdate: Partial<Transaction>): Promise<void> => {
+  const updateTransaction = useCallback(async (id: string, transaction: Partial<Transaction>): Promise<void> => {
     if (!user) throw new Error('Usuário não autenticado');
     
     try {
-      // Atualizar otimisticamente o estado local primeiro
-      const transactionToUpdate = transactions.find(t => t.id === id);
-      
-      if (!transactionToUpdate) {
-        throw new Error('Transação não encontrada');
-      }
-      
-      // Precisamos remover pendingOperation se presente no objeto de atualização
-      const { pendingOperation, ...safeUpdate } = transactionUpdate as any;
-      
-      // Verificar se estamos online ou offline
-      const isOnline = navigator.onLine;
-      
-      const updatedTransaction: Transaction = {
-        ...transactionToUpdate,
-        ...safeUpdate,
-        updatedAt: new Date().toISOString(),
-        pending: safeUpdate.pending !== undefined ? safeUpdate.pending : transactionToUpdate.pending,
-        // Marcar como pendingOperation apenas se estivermos offline
-        pendingOperation: !isOnline
-      };
-      
-      // Atualizar estado local imediatamente
-      setTransactions(prev => 
-        prev.map(t => t.id === id ? updatedTransaction : t)
-      );
-      
-      // Se offline, adicionar à fila
-      if (!isOnline) {
-        await queueService.addToQueue({
-          type: 'update',
-          collection: 'transactions',
-          documentId: id,
-          data: safeUpdate,
-          userId: user.uid
-        });
-        
-        // Atualizar o contador
-        updatePendingCount();
-        return;
-      }
-      
-      // Se online, tentar atualizar diretamente
-      try {
-        console.log('Atualizando transação no Firestore:', id, safeUpdate);
-        await firestoreService.updateTransaction(id, safeUpdate, user.uid);
-        
-        // Atualizar localmente para garantir que não há flag de pendência
-        setTransactions(prev => 
-          prev.map(t => t.id === id ? {...updatedTransaction, pendingOperation: false} : t)
-        );
-        
-      } catch (error) {
-        console.error('Erro ao atualizar transação no Firestore:', error);
-        
-        // Em caso de falha, adicionar à fila
-        await queueService.addToQueue({
-          type: 'update',
-          collection: 'transactions',
-          documentId: id,
-          data: safeUpdate,
-          userId: user.uid
-        });
-        
-        // Marcar a transação como pendente localmente
-        setTransactions(prev => 
-          prev.map(t => t.id === id ? {...updatedTransaction, pendingOperation: true} : t)
-        );
-        
-        // Atualizar o contador
-        updatePendingCount();
-      }
-    } catch (error) {
-      console.error('Erro ao atualizar transação:', error);
-      setError('Falha ao atualizar transação.');
-      throw error;
+      await queueService.updateTransaction(id, transaction, user.uid);
+      success('Transação atualizada com sucesso!');
+    } catch (err) {
+      showError(`Erro ao atualizar transação: ${err instanceof Error ? err.message : 'Erro desconhecido'}`);
+      throw err;
     }
-  };
+  }, [success, showError, user]);
   
-  const deleteTransaction = async (id: string): Promise<void> => {
+  const deleteTransaction = useCallback(async (id: string): Promise<void> => {
     if (!user) throw new Error('Usuário não autenticado');
     
     try {
-      // Atualizar otimisticamente o estado local primeiro
+      console.log('[Finance] Excluindo transação:', id);
+      await enhancedSyncService.deleteTransaction(id, user.uid);
+      
+      // Atualizar estado local
       setTransactions(prev => prev.filter(t => t.id !== id));
       
-      // Se offline ou erro, adicionar à fila
-      if (!navigator.onLine) {
-        await queueService.addToQueue({
-          type: 'delete',
-          collection: 'transactions',
-          documentId: id,
-          data: {},
-          userId: user.uid
-        });
-        
-        // Atualizar o contador
-        updatePendingCount();
-        return;
-      }
-      
-      // Se online, tentar excluir diretamente
-      try {
-        await firestoreService.deleteTransaction(id, user.uid);
-      } catch (error) {
-        console.error('Erro ao excluir transação, adicionando à fila:', error);
-        
-        // Em caso de falha, adicionar à fila
-        await queueService.addToQueue({
-          type: 'delete',
-          collection: 'transactions',
-          documentId: id,
-          data: {},
-          userId: user.uid
-        });
-        
-        // Atualizar o contador
-        updatePendingCount();
-      }
+      success('Transação excluída com sucesso!');
     } catch (error) {
-      console.error('Erro ao excluir transação:', error);
-      setError('Falha ao excluir transação.');
+      console.error('[Finance] Erro ao excluir transação:', error);
+      showError('Erro ao excluir transação. Tente novamente.');
       throw error;
     }
-  };
+  }, [user, success, showError]);
   
   // Implementações similares para categorias
   const addCategory = async (category: Omit<Category, 'id'>): Promise<string> => {
@@ -898,7 +688,7 @@ export const FinanceProvider: React.FC<{ children: ReactNode }> = ({ children })
   // Função para processar operações pendentes manualmente
   const processPendingOperations = async (): Promise<number> => {
     if (!navigator.onLine) {
-      error('Não é possível sincronizar sem conexão com a internet');
+      showError('Não é possível sincronizar sem conexão com a internet');
       return 0;
     }
     
@@ -916,7 +706,7 @@ export const FinanceProvider: React.FC<{ children: ReactNode }> = ({ children })
       return count;
     } catch (err) {
       console.error('Erro ao processar operações pendentes:', err);
-      error(`Erro na sincronização: ${err instanceof Error ? err.message : 'Erro desconhecido'}`);
+      showError(`Erro na sincronização: ${err instanceof Error ? err.message : 'Erro desconhecido'}`);
       return 0;
     }
   };
@@ -945,7 +735,7 @@ export const FinanceProvider: React.FC<{ children: ReactNode }> = ({ children })
     goals,
     filters,
     isLoading,
-    error: errorMsg,
+    error,
     isOffline,
     pendingOperationsCount,
     addAccount,

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 interface Meta {
   id: number;
@@ -10,7 +10,8 @@ interface Meta {
   status: 'em_andamento' | 'concluida' | 'atrasada';
 }
 
-export function Metas() {
+export default function Metas() {
+  // Estado da página
   const [metas, setMetas] = useState<Meta[]>([
     {
       id: 1,
@@ -40,6 +41,25 @@ export function Metas() {
       status: 'em_andamento',
     },
   ]);
+
+  const [formOpen, setFormOpen] = useState(false);
+  
+  // Referência para controlar o ciclo de vida
+  const isMountedRef = useRef(true);
+
+  // Simplificar a lógica de limpeza para evitar dependências circulares
+  useEffect(() => {
+    // Marcar como montado
+    isMountedRef.current = true;
+    
+    console.log('Componente Metas montado');
+    
+    // Limpeza ao desmontar
+    return () => {
+      isMountedRef.current = false;
+      console.log('Componente Metas desmontado');
+    };
+  }, []); // Sem dependências para evitar problemas de re-montagem
 
   const [novaMeta, setNovaMeta] = useState({
     titulo: '',

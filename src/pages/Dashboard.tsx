@@ -1,6 +1,36 @@
-import { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+// import { useFinance } from '../contexts/FinanceContext';
+// import { useNavigation } from '../contexts/NavigationContext';
 
-export function Dashboard() {
+export default function Dashboard() {
+  // const { transactions, accounts } = useFinance();
+  const isMountedRef = useRef(true);
+
+  // Estado para o componente - removendo o estado que causava loop infinito
+  // const [someDashboardState, setSomeDashboardState] = useState({});
+
+  // Função de limpeza de UI - corrigida para não atualizar estado
+  const resetUI = () => {
+    if (isMountedRef.current) {
+      // Não atualizamos o estado aqui mais
+      console.log('Estado do Dashboard limpo');
+    }
+  };
+
+  // Registrar função de limpeza no contexto de navegação
+  useEffect(() => {
+    // Marcar como montado
+    isMountedRef.current = true;
+    
+    console.log('Dashboard montado');
+    
+    // Limpeza ao desmontar
+    return () => {
+      isMountedRef.current = false;
+      console.log('Dashboard desmontado');
+    };
+  }, []);
+
   const [periodo, setPeriodo] = useState('mes');
 
   return (
