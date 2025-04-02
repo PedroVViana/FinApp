@@ -12,7 +12,6 @@ import { Receitas } from './pages/Receitas';
 import { Orcamento } from './pages/Orcamento';
 import { Relatorios } from './pages/Relatorios';
 import { Configuracoes } from './pages/Configuracoes';
-import { Planos } from './pages/Planos';
 import { TermosServico } from './pages/TermosServico';
 import { Privacidade } from './pages/Privacidade';
 
@@ -44,7 +43,6 @@ const MemoizedMetas = memo(Metas);
 const MemoizedOrcamento = memo(Orcamento);
 const MemoizedRelatorios = memo(Relatorios);
 const MemoizedConfiguracoes = memo(Configuracoes);
-const MemoizedPlanos = memo(Planos);
 
 function App() {
   return (
@@ -108,16 +106,6 @@ function App() {
                 </Layout>
               </PrivateRoute>
             } />
-            <Route path="/planos" element={
-              <PrivateRoute>
-                <Layout>
-                  <Planos />
-                </Layout>
-              </PrivateRoute>
-            } />
-
-            {/* Redireciona qualquer rota não encontrada para o dashboard */}
-            <Route path="*" element={<Navigate to="/" />} />
           </Routes>
         </FinanceProvider>
       </AuthProvider>

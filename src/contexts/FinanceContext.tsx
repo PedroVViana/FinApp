@@ -5,6 +5,8 @@ import { enhancedSyncService } from '../services/enhancedSyncService';
 import * as queueService from '../services/queueService';
 import { Account, Transaction, Category, Goal, Filter } from '../types';
 import { useNotification } from '../components/Notification';
+import { collection, query, where, getDocs, Timestamp } from 'firebase/firestore';
+import { db } from '../config/firebase';
 
 interface FinanceContextType {
   accounts: Account[];
@@ -101,6 +103,17 @@ export const FinanceProvider: React.FC<{ children: ReactNode }> = ({ children })
           }
         );
         
+        // Configurar listener para metas
+        const unsubscribeGoals = enhancedSyncService.setupGoalsListener(
+          user.uid,
+          (updatedGoals) => {
+            if (isMounted.current) {
+              console.log('Metas atualizadas:', updatedGoals);
+              setGoals(updatedGoals);
+            }
+          }
+        );
+        
         // Sincronizar dados offline se houver
         enhancedSyncService.syncOfflineData().catch(console.error);
         
@@ -108,6 +121,7 @@ export const FinanceProvider: React.FC<{ children: ReactNode }> = ({ children })
           isMounted.current = false;
           unsubscribeTransactions();
           unsubscribeCategories();
+          unsubscribeGoals();
           enhancedSyncService.destroy();
         };
       } catch (err) {
@@ -291,9 +305,23 @@ export const FinanceProvider: React.FC<{ children: ReactNode }> = ({ children })
     if (!user) throw new Error('Usuário não autenticado');
     
     try {
-      await queueService.updateTransaction(id, transaction, user.uid);
+      console.log('[Finance] Atualizando transação:', id, transaction);
+      
+      // Atualizar otimisticamente o estado local primeiro
+      setTransactions(prev => 
+        prev.map(t => 
+          t.id === id 
+            ? { ...t, ...transaction, updatedAt: new Date().toISOString() }
+            : t
+        )
+      );
+
+      // Usar o serviço de sincronização aprimorado
+      await enhancedSyncService.updateTransaction(id, transaction, user.uid);
+      
       success('Transação atualizada com sucesso!');
     } catch (err) {
+      console.error('[Finance] Erro ao atualizar transação:', err);
       showError(`Erro ao atualizar transação: ${err instanceof Error ? err.message : 'Erro desconhecido'}`);
       throw err;
     }
@@ -505,9 +533,12 @@ export const FinanceProvider: React.FC<{ children: ReactNode }> = ({ children })
   const addGoal = async (goal: Omit<Goal, 'id'>): Promise<string> => {
     if (!user) throw new Error('Usuário não autenticado');
     
+    console.log('[DEBUG] Iniciando addGoal:', goal);
+    
     try {
       // Se offline, adicionar à fila
       if (!navigator.onLine) {
+        console.log('[DEBUG] Modo offline detectado, adicionando à fila');
         await queueService.addToQueue({
           type: 'create',
           collection: 'goals',
@@ -528,6 +559,7 @@ export const FinanceProvider: React.FC<{ children: ReactNode }> = ({ children })
         };
         
         setGoals(prev => [...prev, newGoal]);
+        console.log('[DEBUG] Estado atualizado com meta temporária:', newGoal);
         
         // Atualizar o contador
         updatePendingCount();
@@ -537,10 +569,71 @@ export const FinanceProvider: React.FC<{ children: ReactNode }> = ({ children })
       
       // Se online, tentar criar diretamente
       try {
+        console.log('[DEBUG] Modo online, tentando criar meta diretamente no Firestore');
         const id = await firestoreService.createGoal(goal, user.uid);
+        console.log('[DEBUG] Meta criada com sucesso no Firestore, ID:', id);
+        
+        // CORRIGIDO: Adicionar ao estado local imediatamente após a criação, independente do ID
+        const newGoal: Goal = {
+          ...goal,
+          id,
+          userId: user.uid,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          isCompleted: goal.currentAmount >= goal.targetAmount
+        };
+        
+        // Atualizar otimisticamente o estado local para feedback imediato
+        setGoals(prev => {
+          // Verificar se a meta já existe no estado para evitar duplicação
+          const exists = prev.some(g => g.id === id);
+          if (exists) {
+            return prev; // Retornar o estado atual se a meta já existir
+          }
+          console.log('[DEBUG] Adicionando nova meta ao estado:', newGoal);
+          return [...prev, newGoal];
+        });
+        
+        // Forçar uma nova busca para garantir que temos os dados mais recentes
+        console.log('[DEBUG] Buscar metas atualizadas do Firestore');
+        try {
+          const goalsRef = collection(db, 'goals');
+          const q = query(
+            goalsRef,
+            where('userId', '==', user.uid)
+          );
+          const snapshot = await getDocs(q);
+          const updatedGoals: Goal[] = [];
+          
+          snapshot.forEach(doc => {
+            const data = doc.data();
+            updatedGoals.push({
+              id: doc.id,
+              ...data,
+              deadline: data.deadline instanceof Timestamp
+                ? data.deadline.toDate().toISOString()
+                : data.deadline,
+              createdAt: data.createdAt instanceof Timestamp
+                ? data.createdAt.toDate().toISOString()
+                : data.createdAt,
+              updatedAt: data.updatedAt instanceof Timestamp
+                ? data.updatedAt.toDate().toISOString()
+                : data.updatedAt
+            } as Goal);
+          });
+          
+          console.log('[DEBUG] Metas atualizadas do Firestore:', updatedGoals);
+          
+          if (updatedGoals.length > 0 && isMounted.current) {
+            setGoals(updatedGoals);
+          }
+        } catch (fetchError) {
+          console.error('[DEBUG] Erro ao buscar metas atualizadas:', fetchError);
+        }
+        
         return id;
       } catch (error) {
-        console.error('Erro ao criar meta, adicionando à fila:', error);
+        console.error('[DEBUG] Erro ao criar meta, adicionando à fila:', error);
         
         // Em caso de falha, adicionar à fila
         const queueId = await queueService.addToQueue({
@@ -563,6 +656,7 @@ export const FinanceProvider: React.FC<{ children: ReactNode }> = ({ children })
         };
         
         setGoals(prev => [...prev, newGoal]);
+        console.log('[DEBUG] Estado atualizado com meta temporária após falha:', newGoal);
         
         // Atualizar o contador
         updatePendingCount();
@@ -570,7 +664,7 @@ export const FinanceProvider: React.FC<{ children: ReactNode }> = ({ children })
         return tempId;
       }
     } catch (error) {
-      console.error('Erro ao adicionar meta:', error);
+      console.error('[DEBUG] Erro geral ao adicionar meta:', error);
       setError('Falha ao adicionar meta.');
       throw error;
     }
@@ -579,11 +673,14 @@ export const FinanceProvider: React.FC<{ children: ReactNode }> = ({ children })
   const updateGoal = async (id: string, goalUpdate: Partial<Goal>): Promise<void> => {
     if (!user) throw new Error('Usuário não autenticado');
     
+    console.log('[DEBUG] Iniciando updateGoal:', id, goalUpdate);
+    
     try {
       // Atualizar otimisticamente o estado local primeiro
       const goalToUpdate = goals.find(g => g.id === id);
       
       if (!goalToUpdate) {
+        console.log('[DEBUG] Meta não encontrada no estado local:', id);
         throw new Error('Meta não encontrada');
       }
       
@@ -597,9 +694,11 @@ export const FinanceProvider: React.FC<{ children: ReactNode }> = ({ children })
       setGoals(prev => 
         prev.map(g => g.id === id ? updatedGoal : g)
       );
+      console.log('[DEBUG] Estado local atualizado:', updatedGoal);
       
       // Se offline, adicionar à fila
       if (!navigator.onLine) {
+        console.log('[DEBUG] Modo offline detectado, adicionando atualização à fila');
         await queueService.addToQueue({
           type: 'update',
           collection: 'goals',
@@ -615,9 +714,11 @@ export const FinanceProvider: React.FC<{ children: ReactNode }> = ({ children })
       
       // Se online, tentar atualizar diretamente
       try {
+        console.log('[DEBUG] Modo online, tentando atualizar meta diretamente no Firestore');
         await firestoreService.updateGoal(id, goalUpdate, user.uid);
+        console.log('[DEBUG] Meta atualizada com sucesso no Firestore');
       } catch (error) {
-        console.error('Erro ao atualizar meta, adicionando à fila:', error);
+        console.error('[DEBUG] Erro ao atualizar meta, adicionando à fila:', error);
         
         // Em caso de falha, adicionar à fila
         await queueService.addToQueue({
@@ -632,7 +733,7 @@ export const FinanceProvider: React.FC<{ children: ReactNode }> = ({ children })
         updatePendingCount();
       }
     } catch (error) {
-      console.error('Erro ao atualizar meta:', error);
+      console.error('[DEBUG] Erro geral ao atualizar meta:', error);
       setError('Falha ao atualizar meta.');
       throw error;
     }

@@ -341,23 +341,6 @@ export function Layout({ children }: LayoutProps) {
                               </Link>
                             )}
                           </Menu.Item>
-
-                          <Menu.Item>
-                            {({ active }) => (
-                              <Link
-                                to="/planos"
-                                className={`${
-                                  active ? 'bg-gray-50' : ''
-                                } flex px-4 py-3 text-sm text-gray-700 items-center hover:bg-gray-50 transition-colors duration-150`}
-                              >
-                                <span className="mr-3 text-xl">⭐</span>
-                                <div>
-                                  <p className="font-medium">Alterar Plano</p>
-                                  <p className="text-gray-500">Conheça nossos planos premium</p>
-                                </div>
-                              </Link>
-                            )}
-                          </Menu.Item>
                         </div>
 
                         {/* Botão de Logout */}

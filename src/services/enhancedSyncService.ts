@@ -359,6 +359,157 @@ export class EnhancedSyncService {
     }
   }
 
+  setupGoalsListener(userId: string, callback: (goals: Goal[]) => void): Unsubscribe {
+    console.log(`[Sync] Configurando listener de metas para usuário ${userId}`);
+    
+    try {
+      console.log(`[DEBUG GOALS] Iniciando setupGoalsListener para o usuário ${userId}`);
+      const goalsRef = collection(db, 'goals');
+      const userGoalsQuery = query(
+        goalsRef,
+        where('userId', '==', userId)
+      );
+      
+      console.log(`[DEBUG GOALS] Query configurada sem ordenação para garantir que todas as metas sejam encontradas`);
+      
+      // Flag para controlar se o listener ainda está ativo
+      let isActive = true;
+      
+      // Realizar uma busca inicial para garantir que temos as metas
+      getDocs(userGoalsQuery).then(snapshot => {
+        if (!isActive) return;
+        
+        console.log(`[DEBUG GOALS] Busca inicial encontrou ${snapshot.docs.length} metas`);
+        
+        if (snapshot.docs.length > 0) {
+          const initialGoals = snapshot.docs.map(doc => {
+            const data = doc.data();
+            console.log(`[DEBUG GOALS] Processando meta inicial: ${doc.id}`);
+            
+            return {
+              id: doc.id,
+              ...data,
+              deadline: data.deadline instanceof Timestamp
+                ? data.deadline.toDate().toISOString()
+                : data.deadline,
+              createdAt: data.createdAt instanceof Timestamp
+                ? data.createdAt.toDate().toISOString()
+                : data.createdAt,
+              updatedAt: data.updatedAt instanceof Timestamp
+                ? data.updatedAt.toDate().toISOString()
+                : data.updatedAt
+            } as Goal;
+          });
+          
+          console.log(`[DEBUG GOALS] Enviando ${initialGoals.length} metas iniciais via callback`);
+          callback(initialGoals);
+          
+          // Atualizar cache
+          this.updateCache(`goals-${userId}`, initialGoals);
+        }
+      }).catch(error => {
+        console.error('[DEBUG GOALS] Erro na busca inicial:', error);
+      });
+      
+      // Configurar o listener em tempo real
+      const unsubscribe = onSnapshot(
+        userGoalsQuery,
+        (snapshot) => {
+          console.log(`[DEBUG GOALS] onSnapshot acionado, listener ativo: ${isActive}`);
+          
+          if (!isActive) {
+            console.log('[Sync] Ignorando atualização de metas - listener foi cancelado');
+            return;
+          }
+          
+          console.log(`[Sync] ${snapshot.docs.length} metas recebidas`);
+          console.log(`[DEBUG GOALS] IDs das metas recebidas: ${snapshot.docs.map(doc => doc.id).join(', ')}`);
+          
+          const goals = snapshot.docs.map(doc => {
+            const data = doc.data();
+            console.log(`[DEBUG GOALS] Processando meta com ID: ${doc.id}`);
+            console.log(`[DEBUG GOALS] Dados brutos da meta:`, data);
+            
+            return {
+              id: doc.id,
+              ...data,
+              deadline: data.deadline instanceof Timestamp
+                ? data.deadline.toDate().toISOString()
+                : data.deadline,
+              createdAt: data.createdAt instanceof Timestamp
+                ? data.createdAt.toDate().toISOString()
+                : data.createdAt,
+              updatedAt: data.updatedAt instanceof Timestamp
+                ? data.updatedAt.toDate().toISOString()
+                : data.updatedAt
+            } as Goal;
+          });
+          
+          console.log('[Sync] Metas formatadas:', goals);
+          console.log(`[DEBUG GOALS] Total de metas formatadas: ${goals.length}`);
+          
+          // Atualizar cache
+          this.updateCache(`goals-${userId}`, goals);
+          console.log(`[DEBUG GOALS] Cache atualizado para o usuário ${userId}`);
+          
+          // Verificar se houve alguma alteração real
+          const cachedData = this.getCachedData<Goal[]>(`goals-${userId}`);
+          const hasDifference = !cachedData || 
+                              cachedData.length !== goals.length || 
+                              JSON.stringify(cachedData) !== JSON.stringify(goals);
+          
+          if (hasDifference) {
+            console.log(`[DEBUG GOALS] Diferenças detectadas, chamando callback com ${goals.length} metas`);
+            callback(goals);
+            console.log(`[DEBUG GOALS] Callback concluído`);
+          } else {
+            console.log(`[DEBUG GOALS] Nenhuma alteração real detectada, ignorando callback`);
+          }
+        },
+        (error) => {
+          console.error('[Sync] Erro no listener de metas:', error);
+          console.error(`[DEBUG GOALS] Erro no listener: ${error.message}`);
+          
+          // Em caso de erro, tentar usar cache
+          const cachedData = this.getCachedData<Goal[]>(`goals-${userId}`);
+          if (cachedData) {
+            console.log('[Sync] Usando dados em cache para metas:', cachedData);
+            console.log(`[DEBUG GOALS] Usando ${cachedData.length} metas do cache`);
+            callback(cachedData);
+          } else {
+            console.log(`[DEBUG GOALS] Sem dados em cache para metas`);
+            // Fornecendo um array vazio para evitar erros de referência nula
+            callback([]);
+          }
+        }
+      );
+      
+      console.log(`[DEBUG GOALS] Listener configurado com sucesso para metas do usuário ${userId}`);
+      
+      // Retornar função de limpeza aprimorada
+      return () => {
+        console.log('[Sync] Cancelando listener de metas');
+        console.log(`[DEBUG GOALS] Iniciando limpeza do listener de metas`);
+        isActive = false;
+        try {
+          unsubscribe();
+          console.log('[Sync] Listener de metas cancelado com sucesso');
+          console.log(`[DEBUG GOALS] Função unsubscribe executada com sucesso`);
+        } catch (e) {
+          console.error('[Sync] Erro ao cancelar listener de metas:', e);
+          console.error(`[DEBUG GOALS] Erro ao executar unsubscribe: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      };
+    } catch (error) {
+      console.error('[Sync] Erro ao configurar listener de metas:', error);
+      console.error(`[DEBUG GOALS] Erro geral na configuração do listener: ${error instanceof Error ? error.message : String(error)}`);
+      return () => {
+        console.log('[Sync] Executando função de limpeza vazia para metas (configuração falhou)');
+        console.log(`[DEBUG GOALS] Retornando função de limpeza vazia`);
+      };
+    }
+  }
+
   // Cache Management
   private updateCache<T>(key: string, data: T) {
     this.cache.set(key, {
@@ -580,6 +731,67 @@ export class EnhancedSyncService {
       console.log('[Sync] Transação excluída com sucesso:', transactionId);
     } catch (error) {
       console.error('[Sync] Erro ao excluir transação:', error);
+      throw error;
+    }
+  }
+
+  // Adicionar método para atualizar transações
+  async updateTransaction(transactionId: string, transactionData: any, userId: string): Promise<void> {
+    console.log('[Sync] Atualizando transação:', transactionId);
+    
+    try {
+      // Verificar conexão
+      const isOnline = await this.isOnline();
+      console.log('[Sync] Status da conexão:', isOnline ? 'Online' : 'Offline');
+      
+      if (!isOnline) {
+        console.log('[Sync] Offline - Salvando atualização localmente');
+        const idb = await this.initializeDB();
+        const tx = idb.transaction('transactions', 'readwrite');
+        const store = tx.objectStore('transactions');
+        
+        // Salvar atualização para sincronizar quando voltar online
+        await store.put({
+          id: transactionId,
+          ...transactionData,
+          pendingUpdate: true,
+          updatedAt: new Date().toISOString()
+        });
+        
+        return;
+      }
+      
+      // Se online, atualizar diretamente no Firestore
+      console.log('[Sync] Online - Atualizando transação no Firestore');
+      const transactionRef = doc(db, 'transactions', transactionId);
+      
+      // Verificar se o documento existe e pertence ao usuário
+      const docSnap = await getDoc(transactionRef);
+      if (!docSnap.exists()) {
+        throw new Error('Transação não encontrada');
+      }
+      
+      const currentData = docSnap.data();
+      if (currentData.userId !== userId) {
+        throw new Error('Permissão negada: Esta transação não pertence ao usuário');
+      }
+      
+      // Atualizar a transação
+      await runTransaction(db, async (transaction) => {
+        const docSnap = await transaction.get(transactionRef);
+        if (!docSnap.exists()) {
+          throw new Error('Transação não encontrada durante a atualização');
+        }
+        
+        transaction.update(transactionRef, {
+          ...transactionData,
+          updatedAt: serverTimestamp()
+        });
+      });
+      
+      console.log('[Sync] Transação atualizada com sucesso:', transactionId);
+    } catch (error) {
+      console.error('[Sync] Erro ao atualizar transação:', error);
       throw error;
     }
   }

@@ -28,10 +28,21 @@ const getInitialReceitaState = () => ({
 
 // Interfaces para funcionalidades PRO
 interface ReceitaRecorrente {
-  frequency: 'monthly' | 'weekly' | 'yearly';
+  frequency: 'monthly' | 'weekly' | 'yearly' | 'custom';
   nextDueDate: string;
   lastProcessedDate: string;
   active: boolean;
+  // Campos para recorrência avançada
+  dayOfMonth?: number; // Para recorrência mensal em dia específico
+  dayOfWeek?: number; // Para recorrência semanal (0-6, onde 0 é domingo)
+  monthOfYear?: number; // Para recorrência anual
+  inflationAdjustment: {
+    enabled: boolean;
+    rate: number; // Taxa anual de ajuste pela inflação (%)
+    lastAdjustmentDate: string;
+  };
+  notifyDaysBefore?: number; // Dias antes para notificar
+  endDate?: string; // Data opcional de término da recorrência
 }
 
 interface ReceitaAttachment {
@@ -53,11 +64,22 @@ interface ReceitaReminder {
 // Estado inicial para funcionalidades PRO
 const getInitialProFeaturesState = () => ({
   recorrencia: {
-    frequency: 'monthly' as 'monthly' | 'weekly' | 'yearly',
+    frequency: 'monthly',
     nextDueDate: '',
     lastProcessedDate: '',
-    active: false
-  },
+    active: false,
+    // Novos campos para recorrência avançada
+    dayOfMonth: new Date().getDate(), // Dia atual do mês como padrão
+    dayOfWeek: new Date().getDay(), // Dia atual da semana como padrão
+    monthOfYear: new Date().getMonth() + 1, // Mês atual como padrão
+    inflationAdjustment: {
+      enabled: false,
+      rate: 5.0, // 5% como taxa padrão de inflação
+      lastAdjustmentDate: ''
+    },
+    notifyDaysBefore: 3, // Notificar 3 dias antes como padrão
+    endDate: '' // Sem data de término por padrão
+  } as ReceitaRecorrente,
   anexos: [] as ReceitaAttachment[],
   lembretes: [] as ReceitaReminder[],
   categoriaPersonalizada: '',
@@ -436,12 +458,37 @@ export function Receitas() {
   };
 
   // Funções para funcionalidades PRO
-  const handleRecorrenciaChange = (recorrencia: ReceitaRecorrente) => {
+  const handleRecorrenciaChange = (field: string, value: any) => {
     if (!isPremium) {
       setShowProBanner(true);
       return;
     }
-    setProFeatures(prev => ({ ...prev, recorrencia }));
+    
+    setProFeatures(prev => ({
+      ...prev,
+      recorrencia: {
+        ...prev.recorrencia,
+        [field]: value
+      }
+    }));
+  };
+
+  const handleInflationAdjustmentChange = (field: string, value: any) => {
+    if (!isPremium) {
+      setShowProBanner(true);
+      return;
+    }
+    
+    setProFeatures(prev => ({
+      ...prev,
+      recorrencia: {
+        ...prev.recorrencia,
+        inflationAdjustment: {
+          ...prev.recorrencia.inflationAdjustment,
+          [field]: value
+        }
+      }
+    }));
   };
 
   const handleAttachmentUpload = async (file: File) => {
@@ -742,6 +789,270 @@ export function Receitas() {
         </div>
       )}
 
+      {/* Sistema de Anexos */}
+      <div>
+        <div className="flex items-center mb-3">
+          <h4 className="font-medium text-gray-900">Anexos</h4>
+          {!isPremium && (
+            <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">
+              <FiLock className="mr-1" /> PRO
+            </span>
+          )}
+        </div>
+        
+        {isPremium ? (
+          <div className="space-y-4">
+            <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center">
+              <div className="flex flex-col items-center">
+                <svg className="mx-auto h-12 w-12 text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true">
+                  <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                <div className="mt-4 flex text-sm text-gray-600">
+                  <label 
+                    htmlFor="file-upload" 
+                    className="relative cursor-pointer bg-white rounded-md font-medium text-emerald-600 hover:text-emerald-500"
+                  >
+                    <span>Faça upload de um arquivo</span>
+                    <input 
+                      id="file-upload" 
+                      name="file-upload" 
+                      type="file" 
+                      className="sr-only" 
+                      onChange={(e) => e.target.files && handleAttachmentUpload(e.target.files[0])}
+                    />
+                  </label>
+                  <p className="pl-1">ou arraste e solte</p>
+                </div>
+                <p className="text-xs text-gray-500">
+                  PNG, JPG, PDF até 10MB
+                </p>
+              </div>
+            </div>
+
+            {/* Lista de anexos */}
+            {proFeatures.anexos.length > 0 && (
+              <div className="bg-white rounded-lg border border-gray-200">
+                <ul className="divide-y divide-gray-200">
+                  {proFeatures.anexos.map(anexo => (
+                    <li key={anexo.id} className="px-4 py-3 flex items-center justify-between">
+                      <div className="flex items-center">
+                        <div className="bg-gray-100 rounded-md p-2 mr-3">
+                          {anexo.fileType.includes('image') ? (
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-500" viewBox="0 0 20 20" fill="currentColor">
+                              <path fillRule="evenodd" d="M4 3a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V5a2 2 0 00-2-2H4zm12 12H4l4-8 3 6 2-4 3 6z" clipRule="evenodd" />
+                            </svg>
+                          ) : anexo.fileType.includes('pdf') ? (
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-500" viewBox="0 0 20 20" fill="currentColor">
+                              <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" />
+                            </svg>
+                          ) : (
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-500" viewBox="0 0 20 20" fill="currentColor">
+                              <path fillRule="evenodd" d="M4 4a2 2 0 012-2h8a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 3a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm0 3a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm0 3a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1z" clipRule="evenodd" />
+                            </svg>
+                          )}
+                        </div>
+                        <div>
+                          <h4 className="text-sm font-medium text-gray-900">{anexo.fileName}</h4>
+                          <p className="text-xs text-gray-500">{new Date(anexo.uploadDate).toLocaleDateString()}</p>
+                        </div>
+                      </div>
+                      <div className="flex space-x-2">
+                        <button
+                          type="button"
+                          onClick={() => window.open(anexo.fileUrl, '_blank')}
+                          className="text-indigo-600 hover:text-indigo-900"
+                          title="Visualizar"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                            <path d="M10 12a2 2 0 100-4 2 2 0 000 4z" />
+                            <path fillRule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clipRule="evenodd" />
+                          </svg>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            // Lógica para remover anexo será implementada depois
+                            setProFeatures(prev => ({
+                              ...prev,
+                              anexos: prev.anexos.filter(a => a.id !== anexo.id)
+                            }));
+                          }}
+                          className="text-red-600 hover:text-red-900"
+                          title="Remover"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                            <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
+                          </svg>
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div 
+            className="bg-gray-50 border border-gray-200 rounded-lg p-8 text-center opacity-75 relative"
+            onClick={() => setShowProBanner(true)}
+          >
+            <div className="absolute top-0 left-0 w-full h-full flex items-center justify-center">
+              <div className="bg-white/70 rounded-full p-3 shadow-md">
+                <FiLock size={28} className="text-gray-500" />
+              </div>
+            </div>
+            <svg className="mx-auto h-12 w-12 text-gray-300" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true">
+              <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            <p className="mt-4 text-sm text-gray-500">
+              Faça upgrade para o plano PRO para adicionar anexos às suas receitas
+            </p>
+            <button 
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowProBanner(true);
+              }}
+              className="mt-3 inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500"
+            >
+              Conhecer o plano PRO
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Sistema de Lembretes */}
+      <div>
+        <div className="flex items-center mb-3">
+          <h4 className="font-medium text-gray-900">Lembretes</h4>
+          {!isPremium && (
+            <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">
+              <FiLock className="mr-1" /> PRO
+            </span>
+          )}
+        </div>
+        
+        {isPremium ? (
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Data
+                </label>
+                <input 
+                  type="date" 
+                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-emerald-500 focus:ring-emerald-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Tipo de notificação
+                </label>
+                <select 
+                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-emerald-500 focus:ring-emerald-500"
+                >
+                  <option value="email">Email</option>
+                  <option value="push">Push</option>
+                  <option value="both">Ambos</option>
+                </select>
+              </div>
+              <div className="flex items-end">
+                <button 
+                  type="button" 
+                  onClick={() => {
+                    // Será implementado posteriormente
+                    const newReminder: ReceitaReminder = {
+                      id: Date.now().toString(),
+                      dueDate: new Date().toISOString().split('T')[0],
+                      notifyBefore: 3,
+                      notificationType: 'email',
+                      status: 'pending'
+                    };
+                    handleReminderCreate(newReminder);
+                  }}
+                  className="w-full inline-flex justify-center items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500"
+                >
+                  Adicionar lembrete
+                </button>
+              </div>
+            </div>
+            
+            {/* Lista de lembretes */}
+            {proFeatures.lembretes.length > 0 && (
+              <div className="bg-white rounded-lg border border-gray-200">
+                <ul className="divide-y divide-gray-200">
+                  {proFeatures.lembretes.map(lembrete => (
+                    <li key={lembrete.id} className="px-4 py-3 flex items-center justify-between">
+                      <div>
+                        <div className="flex items-center">
+                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                            lembrete.status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
+                            lembrete.status === 'sent' ? 'bg-green-100 text-green-800' :
+                            'bg-red-100 text-red-800'
+                          }`}>
+                            {lembrete.status === 'pending' ? 'Pendente' :
+                            lembrete.status === 'sent' ? 'Enviado' : 'Cancelado'}
+                          </span>
+                          <span className="ml-2 text-sm text-gray-500">
+                            {new Date(lembrete.dueDate).toLocaleDateString()}
+                          </span>
+                        </div>
+                        <p className="text-sm text-gray-500">
+                          Notificar via {lembrete.notificationType === 'email' ? 'Email' : 
+                                      lembrete.notificationType === 'push' ? 'Push' : 'Email e Push'}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          // Lógica para remover lembrete
+                          setProFeatures(prev => ({
+                            ...prev,
+                            lembretes: prev.lembretes.filter(l => l.id !== lembrete.id)
+                          }));
+                        }}
+                        className="text-red-600 hover:text-red-900"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                          <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
+                        </svg>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div 
+            className="bg-gray-50 border border-gray-200 rounded-lg p-8 text-center opacity-75 relative"
+            onClick={() => setShowProBanner(true)}
+          >
+            <div className="absolute top-0 left-0 w-full h-full flex items-center justify-center">
+              <div className="bg-white/70 rounded-full p-3 shadow-md">
+                <FiLock size={28} className="text-gray-500" />
+              </div>
+            </div>
+            <svg xmlns="http://www.w3.org/2000/svg" className="mx-auto h-12 w-12 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+            </svg>
+            <p className="mt-4 text-sm text-gray-500">
+              Faça upgrade para o plano PRO para criar lembretes para suas receitas
+            </p>
+            <button 
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowProBanner(true);
+              }}
+              className="mt-3 inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500"
+            >
+              Conhecer o plano PRO
+            </button>
+          </div>
+        )}
+      </div>
+
       {/* Barra de ferramentas com filtros */}
       <div className="bg-white shadow rounded-lg p-4">
         <div className="flex flex-wrap gap-4 items-center justify-between">
@@ -812,85 +1123,6 @@ export function Receitas() {
             )}
           </div>
         </div>
-
-        {/* Filtros avançados (Premium) */}
-        {isPremium && showAdvancedFilters && (
-          <div className="mt-4 border-t pt-4 space-y-4">
-            <div>
-              <h3 className="text-sm font-medium text-gray-700 mb-2">Filtrar por Categoria</h3>
-              <div className="flex flex-wrap gap-2">
-                {categories
-                  .filter(cat => cat.type === 'income')
-                  .map(category => (
-                    <button
-                      key={category.id}
-                      type="button"
-                      onClick={() => setSelectedCategories(prev =>
-                        prev.includes(category.id)
-                          ? prev.filter(id => id !== category.id)
-                          : [...prev, category.id]
-                      )}
-                      className={`inline-flex items-center px-3 py-1 rounded-full text-sm ${
-                        selectedCategories.includes(category.id)
-                          ? 'bg-emerald-100 text-emerald-800'
-                          : 'bg-gray-100 text-gray-800'
-                      } hover:bg-emerald-200`}
-                    >
-                      {category.name}
-                    </button>
-                  ))}
-              </div>
-            </div>
-
-            <div>
-              <h3 className="text-sm font-medium text-gray-700 mb-2">Filtrar por Data</h3>
-              <div className="flex space-x-2">
-                <div className="w-1/2">
-                  <label className="block text-xs text-gray-500 mb-1">De</label>
-                  <input
-                    type="date"
-                    value={dateRange.start}
-                    onChange={(e) => setDateRange(prev => ({ ...prev, start: e.target.value }))}
-                    className="w-full rounded-md border-gray-300 shadow-sm focus:border-emerald-500 focus:ring-emerald-500 text-sm"
-                  />
-                </div>
-                <div className="w-1/2">
-                  <label className="block text-xs text-gray-500 mb-1">Até</label>
-                  <input
-                    type="date"
-                    value={dateRange.end}
-                    onChange={(e) => setDateRange(prev => ({ ...prev, end: e.target.value }))}
-                    className="w-full rounded-md border-gray-300 shadow-sm focus:border-emerald-500 focus:ring-emerald-500 text-sm"
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* Tags selecionadas */}
-            {tagFilter.length > 0 && (
-              <div>
-                <h3 className="text-sm font-medium text-gray-700 mb-2">Tags Selecionadas</h3>
-                <div className="flex flex-wrap gap-2">
-                  {tagFilter.map(tag => (
-                    <span
-                      key={tag}
-                      className="inline-flex items-center px-2 py-1 rounded-full text-sm bg-emerald-100 text-emerald-800"
-                    >
-                      {tag}
-                      <button
-                        type="button"
-                        onClick={() => handleTagFilter(tag)}
-                        className="ml-1 text-emerald-600 hover:text-emerald-800"
-                      >
-                        <FiX size={14} />
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
       </div>
 
       <div className="mt-6 bg-white shadow-sm rounded-lg overflow-hidden">
@@ -1019,128 +1251,44 @@ export function Receitas() {
       {showProBanner && <ProFeaturesBanner />}
       <ProFeaturesDialog />
 
-      {/* Adicionar seção de funcionalidades PRO no formulário */}
-      {formOpen && isPremium && (
-        <div className="mt-4 border-t pt-4">
-          <h3 className="text-lg font-medium text-gray-900 mb-4">Recursos Premium</h3>
-          
-          {/* Recorrência */}
-          <div className="mb-4">
-            <label className="block text-sm font-medium text-gray-700">Recorrência</label>
-            <div className="mt-1 flex items-center space-x-3">
-              <select
-                value={proFeatures.recorrencia.frequency}
-                onChange={(e) => handleRecorrenciaChange({
-                  ...proFeatures.recorrencia,
-                  frequency: e.target.value as 'monthly' | 'weekly' | 'yearly'
-                })}
-                className="rounded-md border-gray-300 shadow-sm focus:border-purple-500 focus:ring-purple-500"
-              >
-                <option value="monthly">Mensal</option>
-                <option value="weekly">Semanal</option>
-                <option value="yearly">Anual</option>
-              </select>
-              <input
-                type="date"
-                value={proFeatures.recorrencia.nextDueDate}
-                onChange={(e) => handleRecorrenciaChange({
-                  ...proFeatures.recorrencia,
-                  nextDueDate: e.target.value
-                })}
-                className="rounded-md border-gray-300 shadow-sm focus:border-purple-500 focus:ring-purple-500"
-              />
-              <label className="inline-flex items-center">
-                <input
-                  type="checkbox"
-                  checked={proFeatures.recorrencia.active}
-                  onChange={(e) => handleRecorrenciaChange({
-                    ...proFeatures.recorrencia,
-                    active: e.target.checked
-                  })}
-                  className="rounded border-gray-300 text-purple-600 focus:ring-purple-500"
-                />
-                <span className="ml-2 text-sm text-gray-600">Ativo</span>
-              </label>
-            </div>
+      {/* Card CTA para Plano Pro */}
+      <div className="mt-8 bg-gradient-to-r from-rose-500 to-purple-600 rounded-2xl shadow-lg p-8 text-white">
+        <div className="flex flex-col lg:flex-row items-center justify-between gap-6">
+          <div className="flex-1">
+            <h2 className="text-2xl font-bold mb-4">
+              Gestão Avançada de Receitas com Plano Pro
+            </h2>
+            <p className="text-rose-100 mb-6">
+              Maximize suas receitas com ferramentas inteligentes e automação.
+            </p>
+            <ul className="space-y-3 mb-6">
+              <li className="flex items-center">
+                <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
+                </svg>
+                Previsão de receitas futuras
+              </li>
+              <li className="flex items-center">
+                <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
+                </svg>
+                Gestão de múltiplas fontes de renda
+              </li>
+              <li className="flex items-center">
+                <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
+                </svg>
+                Análise de tendências de receita
+              </li>
+            </ul>
           </div>
-
-          {/* Anexos */}
-          <div className="mb-4">
-            <label className="block text-sm font-medium text-gray-700">Anexos</label>
-            <div className="mt-1 flex items-center space-x-3">
-              <input
-                type="file"
-                onChange={(e) => e.target.files && handleAttachmentUpload(e.target.files[0])}
-                className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-purple-50 file:text-purple-700 hover:file:bg-purple-100"
-              />
-            </div>
-            {proFeatures.anexos.length > 0 && (
-              <ul className="mt-2 divide-y divide-gray-200">
-                {proFeatures.anexos.map(anexo => (
-                  <li key={anexo.id} className="py-2 flex items-center justify-between">
-                    <span className="text-sm text-gray-600">{anexo.fileName}</span>
-                    <button
-                      onClick={() => {
-                        // TODO: Implementar remoção de anexo
-                      }}
-                      className="text-red-600 hover:text-red-800"
-                    >
-                      <FiTrash2 size={16} />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-
-          {/* Lembretes */}
-          <div className="mb-4">
-            <label className="block text-sm font-medium text-gray-700">Lembretes</label>
-            <div className="mt-1 grid grid-cols-3 gap-3">
-              <input
-                type="date"
-                className="rounded-md border-gray-300 shadow-sm focus:border-purple-500 focus:ring-purple-500"
-              />
-              <select
-                className="rounded-md border-gray-300 shadow-sm focus:border-purple-500 focus:ring-purple-500"
-              >
-                <option value="email">Email</option>
-                <option value="push">Push</option>
-                <option value="both">Ambos</option>
-              </select>
-              <button
-                onClick={() => {
-                  // TODO: Implementar criação de lembrete
-                }}
-                className="inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500"
-              >
-                Adicionar
-              </button>
-            </div>
-          </div>
-
-          {/* Categoria Personalizada */}
-          <div className="mb-4">
-            <label className="block text-sm font-medium text-gray-700">Categoria Personalizada</label>
-            <div className="mt-1 flex items-center space-x-3">
-              <input
-                type="text"
-                value={proFeatures.categoriaPersonalizada}
-                onChange={(e) => handleCustomCategoryCreate(e.target.value)}
-                placeholder="Nova categoria"
-                className="rounded-md border-gray-300 shadow-sm focus:border-purple-500 focus:ring-purple-500"
-              />
-              <input
-                type="text"
-                value={proFeatures.subcategoria}
-                onChange={(e) => setProFeatures(prev => ({ ...prev, subcategoria: e.target.value }))}
-                placeholder="Subcategoria (opcional)"
-                className="rounded-md border-gray-300 shadow-sm focus:border-purple-500 focus:ring-purple-500"
-              />
-            </div>
+          <div className="flex flex-col items-center lg:items-end">
+            <button className="bg-white text-purple-600 px-8 py-3 rounded-lg font-semibold hover:bg-purple-50 transition-colors duration-200 shadow-lg">
+              Conhecer Plano Pro
+            </button>
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 } 

@@ -48,6 +48,51 @@ export function Configuracoes() {
           </div>
         </div>
       </div>
+
+      {/* Card CTA para Plano Pro */}
+      <div className="mt-8 bg-gradient-to-r from-rose-500 to-purple-600 rounded-2xl shadow-lg p-8 text-white">
+        <div className="flex flex-col lg:flex-row items-center justify-between gap-6">
+          <div className="flex-1">
+            <h2 className="text-2xl font-bold mb-4">
+              Configurações Avançadas com Plano Pro
+            </h2>
+            <p className="text-rose-100 mb-6">
+              Personalize sua experiência com recursos exclusivos.
+            </p>
+            <ul className="space-y-3 mb-6">
+              <li className="flex items-center">
+                <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
+                </svg>
+                Temas personalizados
+              </li>
+              <li className="flex items-center">
+                <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
+                </svg>
+                Backup automático
+              </li>
+              <li className="flex items-center">
+                <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
+                </svg>
+                Integrações personalizadas
+              </li>
+              <li className="flex items-center">
+                <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
+                </svg>
+                Suporte prioritário
+              </li>
+            </ul>
+          </div>
+          <div className="flex flex-col items-center lg:items-end">
+            <button className="bg-white text-purple-600 px-8 py-3 rounded-lg font-semibold hover:bg-purple-50 transition-colors duration-200 shadow-lg">
+              Conhecer Plano Pro
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 } 

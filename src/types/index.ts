@@ -24,6 +24,7 @@ export interface Transaction {
   updatedAt: Date | string;
   pending?: boolean;
   pendingOperation?: boolean;
+  status?: 'pending' | 'paid' | 'cancelled';
 }
 
 export interface Category {
@@ -42,6 +43,7 @@ export interface User {
   name: string;
   email: string;
   planType: 'free' | 'pro' | 'enterprise';
+  isPremium: boolean;
   createdAt: Date | string;
   updatedAt: Date | string;
 }

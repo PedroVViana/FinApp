@@ -640,23 +640,60 @@ export const createGoal = async (
   goalData: any, 
   userId: string
 ): Promise<string> => {
+  console.log('[FIRESTORE] Iniciando createGoal com dados:', goalData);
+  
   // Validar dados da meta
   if (!goalData.name || !goalData.targetAmount || !goalData.deadline) {
+    console.error('[FIRESTORE] Dados da meta incompletos');
     throw new Error('Dados da meta incompletos');
   }
   
-  const goalRef = collection(db, 'goals');
-  const newGoal = {
-    ...goalData,
-    userId,
-    currentAmount: goalData.currentAmount || 0,
-    isCompleted: false,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp()
-  };
-  
-  const docRef = await addDoc(goalRef, newGoal);
-  return docRef.id;
+  try {
+    const goalRef = collection(db, 'goals');
+    
+    // Converter deadline para timestamp se for string
+    let deadline = goalData.deadline;
+    try {
+      if (typeof deadline === 'string') {
+        deadline = new Date(deadline);
+        console.log('[FIRESTORE] Convertendo deadline de string para Date:', deadline);
+      }
+      // Garantir que deadline seja um Timestamp para armazenamento no Firestore
+      const deadlineTimestamp = Timestamp.fromDate(new Date(deadline));
+      console.log('[FIRESTORE] Deadline final como Timestamp:', deadlineTimestamp);
+      
+      const newGoal = {
+        ...goalData,
+        userId,
+        currentAmount: typeof goalData.currentAmount === 'number' ? goalData.currentAmount : Number(goalData.currentAmount || 0),
+        targetAmount: typeof goalData.targetAmount === 'number' ? goalData.targetAmount : Number(goalData.targetAmount),
+        deadline: deadlineTimestamp,
+        isCompleted: Boolean(goalData.isCompleted) || false,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      };
+      
+      console.log('[FIRESTORE] Preparando para adicionar meta ao Firestore com dados limpos:', newGoal);
+      const docRef = await addDoc(goalRef, newGoal);
+      console.log('[FIRESTORE] Meta adicionada com sucesso ao Firestore, ID:', docRef.id);
+      
+      // Fazer um controle adicional para garantir que o documento foi criado
+      const docSnap = await getDoc(doc(db, 'goals', docRef.id));
+      if (docSnap.exists()) {
+        console.log('[FIRESTORE] Verificação: documento existe no Firestore:', docSnap.data());
+      } else {
+        console.warn('[FIRESTORE] Aviso: documento não encontrado após criação!');
+      }
+      
+      return docRef.id;
+    } catch (timestampError) {
+      console.error('[FIRESTORE] Erro ao processar timestamp:', timestampError);
+      throw new Error(`Erro ao processar data limite: ${timestampError instanceof Error ? timestampError.message : 'Formato de data inválido'}`);
+    }
+  } catch (error) {
+    console.error('[FIRESTORE] Erro ao adicionar meta ao Firestore:', error);
+    throw error;
+  }
 };
 
 export const updateGoal = async (
