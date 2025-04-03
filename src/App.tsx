@@ -56,7 +56,7 @@ function App() {
             <Route path="/termos" element={<TermosServico />} />
             <Route path="/privacidade" element={<Privacidade />} />
             
-            {/* Rotas Protegidas */}
+            {/* Rota Dashboard via rota raiz */}
             <Route path="/" element={
               <PrivateRoute>
                 <Layout>
@@ -64,6 +64,10 @@ function App() {
                 </Layout>
               </PrivateRoute>
             } />
+            
+            {/* Redirecionamento de /dashboard para / */}
+            <Route path="/dashboard" element={<Navigate to="/" replace />} />
+            
             <Route path="/despesas" element={
               <PrivateRoute>
                 <Layout>
